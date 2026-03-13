@@ -13,7 +13,7 @@
  */
 package org.lance.spark;
 
-/** Concrete implementation of BaseBlobCreateTableTest for Spark 3.4. */
+/** Concrete implementation of BaseBlobCreateTableTest for Spark 4.1. */
 public class BlobCreateTableTest extends BaseBlobCreateTableTest {
   // All test methods are inherited from BaseBlobCreateTableTest
 }

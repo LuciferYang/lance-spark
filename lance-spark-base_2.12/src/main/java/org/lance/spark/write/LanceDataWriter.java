@@ -73,6 +73,12 @@ public class LanceDataWriter implements DataWriter<InternalRow> {
 
   @Override
   public void abort() throws IOException {
+    // Signal the write buffer that no more data will be produced.
+    // This unblocks the fragment creation thread's consumer side
+    // (which reads from the buffer via ArrowReader interface),
+    // preventing a deadlock where the consumer waits for more data
+    // while we wait for the consumer to finish.
+    writeBuffer.setFinished();
     fragmentCreationThread.interrupt();
     try {
       // Have a timeout to avoid hanging in native method indefinitely

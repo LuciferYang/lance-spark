@@ -276,22 +276,27 @@ public abstract class BaseLanceFormatTest {
         Arrays.asList(
             RowFactory.create(1, RowFactory.create("Beijing", "China")),
             RowFactory.create(2, null),
-            RowFactory.create(3, RowFactory.create("New York", "USA")));
+            RowFactory.create(3, null), // consecutive nulls
+            RowFactory.create(4, RowFactory.create("New York", "USA")));
 
     List<Row> result = writeAndReadStruct(data, schema, version, "null_mixed");
 
-    assertEquals(3, result.size());
+    assertEquals(4, result.size());
     assertNotNull(result.get(0).getStruct(1));
     assertEquals("Beijing", result.get(0).getStruct(1).getString(0));
     assertEquals("China", result.get(0).getStruct(1).getString(1));
     assertTrue(
         result.get(1).isNullAt(1),
         "Null struct should be read back as NULL for format version " + version);
+    assertTrue(
+        result.get(2).isNullAt(1),
+        "Consecutive null struct should be read back as NULL for format version " + version);
+    // Row after consecutive nulls — validates count alignment accumulates correctly
     assertNotNull(
-        result.get(2).getStruct(1),
-        "Non-null struct after a null row should not be NULL for format version " + version);
-    assertEquals("New York", result.get(2).getStruct(1).getString(0));
-    assertEquals("USA", result.get(2).getStruct(1).getString(1));
+        result.get(3).getStruct(1),
+        "Non-null struct after consecutive nulls should not be NULL for format version " + version);
+    assertEquals("New York", result.get(3).getStruct(1).getString(0));
+    assertEquals("USA", result.get(3).getStruct(1).getString(1));
   }
 
   /**
@@ -315,6 +320,10 @@ public abstract class BaseLanceFormatTest {
     assertFalse(
         result.get(1).isNullAt(1),
         "V2_0 legacy encoder reads null struct as empty struct, not null");
+    Row emptyStruct = result.get(1).getStruct(1);
+    assertNotNull(emptyStruct);
+    assertTrue(emptyStruct.isNullAt(0), "city should be null in V2_0 empty struct");
+    assertTrue(emptyStruct.isNullAt(1), "country should be null in V2_0 empty struct");
     // Non-null rows should still be correct
     assertEquals("Beijing", result.get(0).getStruct(1).getString(0));
     assertEquals("New York", result.get(2).getStruct(1).getString(0));
@@ -328,8 +337,6 @@ public abstract class BaseLanceFormatTest {
   @ParameterizedTest
   @ValueSource(strings = {"V2_1", "V2_2"})
   public void testNestedStructWithNullValues(String version) {
-    String outputPath = tempDir.resolve("test_nested_struct_" + version + ".lance").toString();
-
     // Schema: id INT, person STRUCT<name: STRING, address: STRUCT<city: STRING, country: STRING>>
     StructType addressSchema = createAddressSchema();
     StructType personSchema =
@@ -353,15 +360,7 @@ public abstract class BaseLanceFormatTest {
             RowFactory.create(4, RowFactory.create("Charlie", null)), // inner struct is null
             RowFactory.create(5, RowFactory.create("Diana", RowFactory.create("Tokyo", "Japan"))));
 
-    Dataset<Row> df = spark.createDataFrame(data, schema);
-    df.write()
-        .format("lance")
-        .option("data_storage_version", version)
-        .mode(SaveMode.ErrorIfExists)
-        .save(outputPath);
-
-    Dataset<Row> readDf = spark.read().format("lance").load(outputPath);
-    List<Row> result = readDf.orderBy("id").collectAsList();
+    List<Row> result = writeAndReadStruct(data, schema, version, "nested");
 
     assertEquals(5, result.size());
 

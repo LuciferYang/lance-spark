@@ -217,7 +217,7 @@ public final class RowAddressFilterAnalyzer {
     }
     // All other types (Float, Double, BigDecimal, BigInteger, String, etc.) → no pruning.
     // We prefer false negatives (no pruning) over incorrect pruning from truncation.
-    LOG.debug(
+    LOG.warn(
         "Unsupported _rowaddr value type for fragment pruning: {}",
         value != null ? value.getClass().getSimpleName() : "null");
     return Optional.empty();

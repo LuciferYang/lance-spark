@@ -135,9 +135,8 @@ public class LanceScan
   }
 
   /**
-   * Prunes splits based on {@code _rowaddr} filters. This serves as both a correctness fix for
-   * lance-core bug lance#5351 and a performance optimization — skipping fragment opens, scan setup,
-   * and task scheduling for fragments that provably cannot match the query predicate.
+   * Prunes splits based on {@code _rowaddr} filters — skipping fragment opens, scan setup, and task
+   * scheduling for fragments that provably cannot match the query predicate.
    *
    * <p>CONTRACT: {@link LanceSplit#getFragments()} returns Lance fragment IDs as Integer values
    * that match {@code (int)(rowAddr >>> 32)} — the same encoding used by {@link
@@ -170,7 +169,7 @@ public class LanceScan
                 })
             .collect(Collectors.toList());
     if (pruned.size() < allSplits.size()) {
-      LOG.info(
+      LOG.debug(
           "Pruned fragments by _rowaddr filters: {} of {} splits retained,"
               + " allowed fragment IDs: {}",
           pruned.size(),

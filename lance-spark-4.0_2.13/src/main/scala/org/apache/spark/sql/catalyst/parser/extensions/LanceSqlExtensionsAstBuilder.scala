@@ -16,20 +16,14 @@ package org.apache.spark.sql.catalyst.parser.extensions
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedIdentifier, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.parser.ParserInterface
 import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, LogicalPlan, NamedArgument, Optimize, ShowIndexes, UpdateColumnsBackfill, Vacuum}
+import org.lance.spark.utils.ParserUtils
 
 import scala.jdk.CollectionConverters._
 
 class LanceSqlExtensionsAstBuilder(delegate: ParserInterface)
   extends LanceSqlExtensionsBaseVisitor[AnyRef] {
 
-  /** Strips backticks from BACKQUOTED_IDENTIFIER tokens and unescapes doubled backticks. */
-  private def cleanIdentifier(text: String): String = {
-    if (text.startsWith("`") && text.endsWith("`")) {
-      text.substring(1, text.length - 1).replace("``", "`")
-    } else {
-      text
-    }
-  }
+  private def cleanIdentifier(text: String): String = ParserUtils.cleanIdentifier(text)
 
   override def visitSingleStatement(ctx: LanceSqlExtensionsParser.SingleStatementContext)
       : LogicalPlan = {

@@ -256,6 +256,8 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   @Override
   public Table alterTable(Identifier ident, TableChange... changes) throws NoSuchTableException {
+    // Routes based on table existence. Cross-provider alter (e.g., converting a Parquet table
+    // to Lance) is not supported — use CREATE TABLE ... AS SELECT to migrate between providers.
     if (lanceCatalog.tableExists(ident)) {
       return lanceCatalog.alterTable(ident, changes);
     }

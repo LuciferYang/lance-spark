@@ -117,7 +117,9 @@ All SQL extensions (OPTIMIZE, VACUUM, CREATE INDEX) work through the session cat
 
 #### `default-provider` Options
 
-When a `CREATE TABLE` statement omits the `USING` clause, the `default-provider` setting determines which catalog handles the operation:
+When the v2 catalog's `createTable` API is called without a provider (e.g., via programmatic catalog access), the `default-provider` setting determines which catalog handles the operation.
+
+**Note:** `CREATE TABLE t(id INT)` via SQL (without `USING`) may go through Spark's v1 Hive code path before reaching the v2 catalog, in which case this setting has no effect. Always use `USING lance` explicitly in SQL statements to ensure Lance table creation.
 
 | Value | Behavior | Use Case |
 |-------|----------|----------|

@@ -300,6 +300,11 @@ public abstract class BaseTestSparkSessionCatalog {
         "Creating table without provider in error mode should throw");
   }
 
+  // Note: there is no SQL-level test for default-provider=lance because CREATE TABLE without
+  // USING goes through Spark's v1 Hive code path (LazySimpleSerDe) before reaching the v2
+  // catalog's createTable. The default-provider routing is validated via the catalog API in
+  // testDefaultProviderErrorModeRejectsNullProvider above.
+
   // ---------------------------------------------------------------------------
   // Invalidate table — both catalogs called
   // ---------------------------------------------------------------------------

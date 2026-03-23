@@ -587,7 +587,12 @@ public abstract class BaseLanceNamespaceSparkCatalog
     // Call describeTable to get initial storage options for Spark dataset wrapper
     DescribeTableRequest describeRequest = new DescribeTableRequest();
     tableIdList.forEach(describeRequest::addIdItem);
-    DescribeTableResponse describeResponse = namespace.describeTable(describeRequest);
+    DescribeTableResponse describeResponse;
+    try {
+      describeResponse = describeTableOrThrow(describeRequest, ident);
+    } catch (NoSuchTableException e) {
+      throw new RuntimeException("Table was just created but cannot be described: " + ident, e);
+    }
     Map<String, String> initialStorageOptions = describeResponse.getStorageOptions();
 
     // Create read options with namespace settings
@@ -793,12 +798,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
 
     DescribeTableRequest describeRequest = new DescribeTableRequest();
     tableIdList.forEach(describeRequest::addIdItem);
-    DescribeTableResponse describeResponse;
-    try {
-      describeResponse = namespace.describeTable(describeRequest);
-    } catch (TableNotFoundException e) {
-      throw new NoSuchTableException(ident);
-    }
+    DescribeTableResponse describeResponse = describeTableOrThrow(describeRequest, ident);
     String location = describeResponse.getLocation();
     Map<String, String> initialStorageOptions = describeResponse.getStorageOptions();
 
@@ -884,7 +884,12 @@ public abstract class BaseLanceNamespaceSparkCatalog
     } else {
       DescribeTableRequest describeRequest = new DescribeTableRequest();
       tableIdList.forEach(describeRequest::addIdItem);
-      DescribeTableResponse describeResponse = namespace.describeTable(describeRequest);
+      DescribeTableResponse describeResponse;
+      try {
+        describeResponse = describeTableOrThrow(describeRequest, actualIdent);
+      } catch (NoSuchTableException e) {
+        throw new RuntimeException("Table exists but cannot be described: " + actualIdent, e);
+      }
       location = describeResponse.getLocation();
       initialStorageOptions = describeResponse.getStorageOptions();
     }
@@ -1088,14 +1093,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     // Call describeTable to get location and initial storage options
     DescribeTableRequest describeRequest = new DescribeTableRequest();
     tableId.forEach(describeRequest::addIdItem);
-    DescribeTableResponse describeResponse;
-    try {
-      describeResponse = namespace.describeTable(describeRequest);
-    } catch (TableNotFoundException e) {
-      throw new NoSuchTableException(ident);
-    } catch (RuntimeException e) {
-      throw new RuntimeException("Failed to describe table: " + ident, e);
-    }
+    DescribeTableResponse describeResponse = describeTableOrThrow(describeRequest, ident);
     String location = describeResponse.getLocation();
     Map<String, String> initialStorageOptions = describeResponse.getStorageOptions();
 
@@ -1126,6 +1124,32 @@ public abstract class BaseLanceNamespaceSparkCatalog
     // Create read options with namespace support
     return createDataset(
         readOptions, schema, initialStorageOptions, namespaceImpl, namespaceProperties);
+  }
+
+  /**
+   * Calls namespace.describeTable and translates both {@link TableNotFoundException} and JNI
+   * RuntimeExceptions whose message indicates a missing table into Spark's {@link
+   * NoSuchTableException}.
+   *
+   * <p>The DirectoryNamespace JNI layer may throw a raw RuntimeException with a message containing
+   * "Table does not exist" or "Table ... not found" instead of a typed TableNotFoundException. This
+   * helper ensures consistent exception handling across all describeTable call sites.
+   */
+  private DescribeTableResponse describeTableOrThrow(DescribeTableRequest request, Identifier ident)
+      throws NoSuchTableException {
+    try {
+      return namespace.describeTable(request);
+    } catch (TableNotFoundException e) {
+      throw new NoSuchTableException(ident);
+    } catch (RuntimeException e) {
+      String msg = e.getMessage();
+      if (msg != null
+          && (msg.contains("Table does not exist")
+              || (msg.contains("Table") && msg.contains("not found")))) {
+        throw new NoSuchTableException(ident);
+      }
+      throw e;
+    }
   }
 
   /**

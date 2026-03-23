@@ -587,12 +587,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     // Call describeTable to get initial storage options for Spark dataset wrapper
     DescribeTableRequest describeRequest = new DescribeTableRequest();
     tableIdList.forEach(describeRequest::addIdItem);
-    DescribeTableResponse describeResponse;
-    try {
-      describeResponse = describeTableOrThrow(describeRequest, ident);
-    } catch (NoSuchTableException e) {
-      throw new RuntimeException("Table was just created but cannot be described: " + ident, e);
-    }
+    DescribeTableResponse describeResponse = namespace.describeTable(describeRequest);
     Map<String, String> initialStorageOptions = describeResponse.getStorageOptions();
 
     // Create read options with namespace settings
@@ -884,12 +879,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     } else {
       DescribeTableRequest describeRequest = new DescribeTableRequest();
       tableIdList.forEach(describeRequest::addIdItem);
-      DescribeTableResponse describeResponse;
-      try {
-        describeResponse = describeTableOrThrow(describeRequest, actualIdent);
-      } catch (NoSuchTableException e) {
-        throw new RuntimeException("Table exists but cannot be described: " + actualIdent, e);
-      }
+      DescribeTableResponse describeResponse = namespace.describeTable(describeRequest);
       location = describeResponse.getLocation();
       initialStorageOptions = describeResponse.getStorageOptions();
     }
@@ -1133,7 +1123,10 @@ public abstract class BaseLanceNamespaceSparkCatalog
    *
    * <p>The DirectoryNamespace JNI layer may throw a raw RuntimeException with a message containing
    * "Table does not exist" or "Table ... not found" instead of a typed TableNotFoundException. This
-   * helper ensures consistent exception handling across all describeTable call sites.
+   * helper should be used at call sites where {@code NoSuchTableException} is the expected outcome
+   * for missing tables (e.g. {@code loadTableInternal}, {@code stageReplace}). Call sites where the
+   * table is known to exist (e.g. post-creation) should call {@code namespace.describeTable()}
+   * directly, since a missing table there indicates an unexpected error.
    */
   private DescribeTableResponse describeTableOrThrow(DescribeTableRequest request, Identifier ident)
       throws NoSuchTableException {

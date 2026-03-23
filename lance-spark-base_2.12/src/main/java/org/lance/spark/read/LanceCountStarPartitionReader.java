@@ -130,7 +130,8 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
     long rowCount = computeCount();
     StructType countSchema =
         new StructType().add("count", org.apache.spark.sql.types.DataTypes.LongType);
-    return createCountResultBatch(rowCount, countSchema);
+    currentBatch = createCountResultBatch(rowCount, countSchema);
+    return currentBatch;
   }
 
   @Override

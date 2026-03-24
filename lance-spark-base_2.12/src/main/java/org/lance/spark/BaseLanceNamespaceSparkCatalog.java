@@ -1121,12 +1121,25 @@ public abstract class BaseLanceNamespaceSparkCatalog
    * RuntimeExceptions whose message indicates a missing table into Spark's {@link
    * NoSuchTableException}.
    *
-   * <p>The DirectoryNamespace JNI layer may throw a raw RuntimeException with a message containing
-   * "Table does not exist" or "Table ... not found" instead of a typed TableNotFoundException. This
-   * helper should be used at call sites where {@code NoSuchTableException} is the expected outcome
-   * for missing tables (e.g. {@code loadTableInternal}, {@code stageReplace}). Call sites where the
-   * table is known to exist (e.g. post-creation) should call {@code namespace.describeTable()}
-   * directly, since a missing table there indicates an unexpected error.
+   * <p>The DirectoryNamespace JNI layer currently throws a raw RuntimeException instead of a typed
+   * TableNotFoundException. This is because dir.rs and dir/manifest.rs in lance-namespace-impls use
+   * {@code Error::namespace_source(String)} instead of {@code NamespaceError::TableNotFound}, so
+   * the JNI downcast to NamespaceError fails and falls back to RuntimeException. Two known message
+   * patterns exist:
+   *
+   * <ul>
+   *   <li>dir.rs: "Table does not exist: {table_name}"
+   *   <li>dir/manifest.rs: "Table '{table_name}' not found"
+   * </ul>
+   *
+   * <p>TODO: Remove the RuntimeException catch block once lance fixes dir.rs and manifest.rs to use
+   * {@code NamespaceError::TableNotFound}. The JNI bridge will then produce TableNotFoundException
+   * directly.
+   *
+   * <p>This helper should be used at call sites where {@code NoSuchTableException} is the expected
+   * outcome for missing tables (e.g. {@code loadTableInternal}, {@code stageReplace}). Call sites
+   * where the table is known to exist (e.g. post-creation) should call {@code
+   * namespace.describeTable()} directly, since a missing table there indicates an unexpected error.
    */
   private DescribeTableResponse describeTableOrThrow(DescribeTableRequest request, Identifier ident)
       throws NoSuchTableException {

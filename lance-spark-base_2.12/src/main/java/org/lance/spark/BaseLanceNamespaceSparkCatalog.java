@@ -16,6 +16,8 @@ package org.lance.spark;
 import org.lance.Dataset;
 import org.lance.WriteParams;
 import org.lance.namespace.LanceNamespace;
+import org.lance.namespace.errors.ErrorCode;
+import org.lance.namespace.errors.LanceNamespaceException;
 import org.lance.namespace.errors.TableNotFoundException;
 import org.lance.namespace.model.DeclareTableRequest;
 import org.lance.namespace.model.DeclareTableResponse;
@@ -1117,24 +1119,25 @@ public abstract class BaseLanceNamespaceSparkCatalog
   }
 
   /**
-   * Calls namespace.describeTable and translates both {@link TableNotFoundException} and JNI
-   * RuntimeExceptions whose message indicates a missing table into Spark's {@link
+   * Calls namespace.describeTable and translates table-not-found errors into Spark's {@link
    * NoSuchTableException}.
    *
-   * <p>The DirectoryNamespace JNI layer currently throws a raw RuntimeException instead of a typed
-   * TableNotFoundException. This is because dir.rs and dir/manifest.rs in lance-namespace-impls use
-   * {@code Error::namespace_source(String)} instead of {@code NamespaceError::TableNotFound}, so
-   * the JNI downcast to NamespaceError fails and falls back to RuntimeException. Two known message
-   * patterns exist:
+   * <p>Two catch blocks handle the error:
    *
-   * <ul>
-   *   <li>dir.rs: "Table does not exist: {table_name}"
-   *   <li>dir/manifest.rs: "Table '{table_name}' not found"
-   * </ul>
+   * <ol>
+   *   <li>{@link LanceNamespaceException} with {@link ErrorCode#TABLE_NOT_FOUND} — catches the
+   *       exception that the JNI bridge creates once the upstream lance-namespace-impls uses typed
+   *       {@code NamespaceError::TableNotFound} (see lance PR #6267 / #6275). This also covers
+   *       {@link TableNotFoundException} (a subclass of {@link LanceNamespaceException}).
+   *   <li>{@link RuntimeException} with message matching — workaround for the current state where
+   *       dir.rs and dir/manifest.rs use {@code Error::namespace_source(String)}, causing the JNI
+   *       downcast to {@code NamespaceError} to fail and fall back to a raw RuntimeException. Two
+   *       known message patterns: "Table does not exist: {name}" (dir.rs) and "Table '{name}' not
+   *       found" (manifest.rs).
+   * </ol>
    *
    * <p>TODO: Remove the RuntimeException catch block once lance fixes dir.rs and manifest.rs to use
-   * {@code NamespaceError::TableNotFound}. The JNI bridge will then produce TableNotFoundException
-   * directly.
+   * {@code NamespaceError::TableNotFound}.
    *
    * <p>This helper should be used at call sites where {@code NoSuchTableException} is the expected
    * outcome for missing tables (e.g. {@code loadTableInternal}, {@code stageReplace}). Call sites
@@ -1145,8 +1148,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       throws NoSuchTableException {
     try {
       return namespace.describeTable(request);
-    } catch (TableNotFoundException e) {
-      throw new NoSuchTableException(ident);
+    } catch (LanceNamespaceException e) {
+      if (e.getErrorCode() == ErrorCode.TABLE_NOT_FOUND) {
+        throw new NoSuchTableException(ident);
+      }
+      throw e;
     } catch (RuntimeException e) {
       String msg = e.getMessage();
       if (msg != null

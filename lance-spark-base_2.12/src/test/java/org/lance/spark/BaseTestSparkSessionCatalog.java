@@ -161,22 +161,6 @@ public abstract class BaseTestSparkSessionCatalog {
         "Should reject invalid default-provider value");
   }
 
-  @Test
-  public void testInvalidDropBehaviorRejected() {
-    BaseLanceNamespaceSparkSessionCatalog sessionCat =
-        (BaseLanceNamespaceSparkSessionCatalog) catalog;
-
-    Map<String, String> badOptions = new HashMap<>();
-    badOptions.put("impl", "dir");
-    badOptions.put("root", tempDir.toString());
-    badOptions.put("drop-behavior", "both");
-
-    assertThrows(
-        IllegalArgumentException.class,
-        () -> sessionCat.initialize("test_catalog", new CaseInsensitiveStringMap(badOptions)),
-        "Should reject unimplemented drop-behavior value");
-  }
-
   // ---------------------------------------------------------------------------
   // CTAS (Create Table As Select) through staging path
   // ---------------------------------------------------------------------------
@@ -290,7 +274,7 @@ public abstract class BaseTestSparkSessionCatalog {
 
     // Creating a table without USING should throw
     assertThrows(
-        Exception.class,
+        RuntimeException.class,
         () ->
             sessionCat.createTable(
                 Identifier.of(new String[] {"default"}, "test_table"),
@@ -374,7 +358,7 @@ public abstract class BaseTestSparkSessionCatalog {
 
     // OPTIMIZE on a non-Lance table should fail gracefully
     assertThrows(
-        Exception.class,
+        RuntimeException.class,
         () -> spark.sql("OPTIMIZE default." + tableName),
         "OPTIMIZE on non-Lance table should throw");
   }

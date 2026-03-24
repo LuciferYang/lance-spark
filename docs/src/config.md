@@ -113,7 +113,6 @@ All SQL extensions (OPTIMIZE, VACUUM, CREATE INDEX) work through the session cat
 | `spark.sql.catalog.spark_catalog` | String | ✓ | — | Set to `org.lance.spark.LanceNamespaceSparkSessionCatalog` |
 | `spark.sql.catalog.spark_catalog.impl` | String | ✓ | — | Namespace implementation (`dir`, `rest`, `hive3`, `glue`, etc.) |
 | `spark.sql.catalog.spark_catalog.default-provider` | String | ✗ | `delegate` | Controls routing when `USING` clause is omitted. See below. |
-| `spark.sql.catalog.spark_catalog.drop-behavior` | String | ✗ | `first-match` | Controls drop behavior for dual-existence tables. |
 
 #### `default-provider` Options
 

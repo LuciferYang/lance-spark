@@ -65,8 +65,6 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   private static final Set<String> VALID_DEFAULT_PROVIDERS =
       Collections.unmodifiableSet(new HashSet<>(Arrays.asList("delegate", "lance", "error")));
-  private static final Set<String> VALID_DROP_BEHAVIORS =
-      Collections.unmodifiableSet(new HashSet<>(Arrays.asList("first-match")));
 
   private String catalogName;
   private String defaultProvider;
@@ -91,9 +89,9 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
   public void initialize(String name, CaseInsensitiveStringMap options) {
     this.catalogName = name;
 
-    // Validate and store default-provider
-    String dp = options.getOrDefault("default-provider", "delegate");
-    if (!VALID_DEFAULT_PROVIDERS.contains(dp.toLowerCase())) {
+    // Validate and store default-provider (normalized to lowercase)
+    String dp = options.getOrDefault("default-provider", "delegate").toLowerCase();
+    if (!VALID_DEFAULT_PROVIDERS.contains(dp)) {
       throw new IllegalArgumentException(
           "Invalid default-provider '" + dp + "'. Valid values: " + VALID_DEFAULT_PROVIDERS);
     }
@@ -104,13 +102,6 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
           "No explicit default-provider set for catalog '{}'. "
               + "Defaulting to 'delegate' (tables without USING clause go to the session catalog).",
           name);
-    }
-
-    // Validate drop-behavior if present
-    String dropBehavior = options.getOrDefault("drop-behavior", "first-match");
-    if (!VALID_DROP_BEHAVIORS.contains(dropBehavior.toLowerCase())) {
-      throw new IllegalArgumentException(
-          "Invalid drop-behavior '" + dropBehavior + "'. Valid values: " + VALID_DROP_BEHAVIORS);
     }
 
     // Build and initialize the internal Lance catalog with a derived name
@@ -171,13 +162,13 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
       return false;
     }
     // provider is null — use default-provider to decide
-    if ("error".equalsIgnoreCase(defaultProvider)) {
+    if ("error".equals(defaultProvider)) {
       throw new RuntimeException(
           "No table provider specified. Set spark.sql.catalog."
               + catalogName
               + ".default-provider or add USING lance/parquet to your statement.");
     }
-    boolean result = "lance".equalsIgnoreCase(defaultProvider);
+    boolean result = "lance".equals(defaultProvider);
     if (result) {
       LOG.warn("Creating table as Lance (no explicit USING clause; default-provider=lance).");
     }
@@ -207,14 +198,13 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   @Override
   public Table loadTable(Identifier ident) throws NoSuchTableException {
-    // tableExists is an optimization to avoid exception-driven routing for non-Lance tables.
-    // The catch block handles TOCTOU races (table dropped between exists-check and load).
+    // Pre-check with tableExists to avoid triggering RuntimeException from loadTableInternal
+    // when the table doesn't exist in Lance. This is a workaround for the lance-core JNI bug
+    // where describeTable throws RuntimeException instead of NoSuchTableException for missing
+    // tables (see PR #326). Once that fix is merged, this can be simplified to Iceberg's
+    // try-catch pattern.
     if (lanceCatalog.tableExists(ident)) {
-      try {
-        return lanceCatalog.loadTable(ident);
-      } catch (NoSuchTableException e) {
-        // Table was dropped between exists-check and load; fall through to delegate
-      }
+      return lanceCatalog.loadTable(ident);
     }
     return getSessionCatalog().loadTable(ident);
   }
@@ -222,11 +212,7 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
   @Override
   public Table loadTable(Identifier ident, long timestamp) throws NoSuchTableException {
     if (lanceCatalog.tableExists(ident)) {
-      try {
-        return lanceCatalog.loadTable(ident, timestamp);
-      } catch (NoSuchTableException e) {
-        // Fall through to delegate
-      }
+      return lanceCatalog.loadTable(ident, timestamp);
     }
     return getSessionCatalog().loadTable(ident, timestamp);
   }
@@ -234,11 +220,7 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
   @Override
   public Table loadTable(Identifier ident, String version) throws NoSuchTableException {
     if (lanceCatalog.tableExists(ident)) {
-      try {
-        return lanceCatalog.loadTable(ident, version);
-      } catch (NoSuchTableException e) {
-        // Fall through to delegate
-      }
+      return lanceCatalog.loadTable(ident, version);
     }
     return getSessionCatalog().loadTable(ident, version);
   }
@@ -247,7 +229,7 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
   public Table createTable(
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws TableAlreadyExistsException, NoSuchNamespaceException {
-    String provider = properties != null ? properties.get("provider") : null;
+    String provider = properties.get("provider");
     if (useLance(provider)) {
       return lanceCatalog.createTable(ident, schema, partitions, properties);
     }
@@ -266,35 +248,12 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   @Override
   public boolean dropTable(Identifier ident) {
-    boolean droppedFromLance = lanceCatalog.dropTable(ident);
-    if (droppedFromLance) {
-      if (getSessionCatalog().tableExists(ident)) {
-        LOG.warn(
-            "Table '{}' exists in both Lance and delegate catalog. "
-                + "Dropped from Lance only. To drop the delegate copy, access the "
-                + "underlying catalog directly (e.g., Hive metastore CLI or "
-                + "spark.sessionState.catalog).",
-            ident);
-      }
-      return true;
-    }
-    return getSessionCatalog().dropTable(ident);
+    return lanceCatalog.dropTable(ident) || getSessionCatalog().dropTable(ident);
   }
 
   @Override
   public boolean purgeTable(Identifier ident) {
-    boolean purgedFromLance = lanceCatalog.purgeTable(ident);
-    if (purgedFromLance) {
-      if (getSessionCatalog().tableExists(ident)) {
-        LOG.error(
-            "Table '{}' exists in both Lance and delegate catalog. "
-                + "Purged from Lance only (irrecoverable). Delegate catalog copy remains. "
-                + "Manual cleanup required via the underlying catalog.",
-            ident);
-      }
-      return true;
-    }
-    return getSessionCatalog().purgeTable(ident);
+    return lanceCatalog.purgeTable(ident) || getSessionCatalog().purgeTable(ident);
   }
 
   @Override
@@ -334,130 +293,83 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
   public StagedTable stageCreate(
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws TableAlreadyExistsException, NoSuchNamespaceException {
-    String provider = properties != null ? properties.get("provider") : null;
+    String provider = properties.get("provider");
+    TableCatalog catalog;
     if (useLance(provider)) {
-      return stageLanceCreate(ident, schema, partitions, properties);
+      if (asStagingLanceCatalog != null) {
+        return asStagingLanceCatalog.stageCreate(ident, schema, partitions, properties);
+      }
+      catalog = lanceCatalog;
+    } else {
+      TableCatalog delegate = getSessionCatalog();
+      if (delegate instanceof StagingTableCatalog) {
+        return ((StagingTableCatalog) delegate).stageCreate(ident, schema, partitions, properties);
+      }
+      catalog = delegate;
     }
-    return stageDelegateCreate(ident, schema, partitions, properties);
+
+    Table table = catalog.createTable(ident, schema, partitions, properties);
+    return new RollbackStagedTable(catalog, ident, table);
   }
 
   @Override
   public StagedTable stageReplace(
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws NoSuchNamespaceException, NoSuchTableException {
-    String provider = properties != null ? properties.get("provider") : null;
+    String provider = properties.get("provider");
+    TableCatalog catalog;
     if (useLance(provider)) {
-      return stageLanceReplace(ident, schema, partitions, properties);
+      if (asStagingLanceCatalog != null) {
+        return asStagingLanceCatalog.stageReplace(ident, schema, partitions, properties);
+      }
+      catalog = lanceCatalog;
+    } else {
+      TableCatalog delegate = getSessionCatalog();
+      if (delegate instanceof StagingTableCatalog) {
+        return ((StagingTableCatalog) delegate).stageReplace(ident, schema, partitions, properties);
+      }
+      catalog = delegate;
     }
-    return stageDelegateReplace(ident, schema, partitions, properties);
+
+    if (!catalog.dropTable(ident)) {
+      throw new NoSuchTableException(ident);
+    }
+
+    try {
+      Table table = catalog.createTable(ident, schema, partitions, properties);
+      return new RollbackStagedTable(catalog, ident, table);
+    } catch (TableAlreadyExistsException e) {
+      return stageReplace(ident, schema, partitions, properties);
+    }
   }
 
   @Override
   public StagedTable stageCreateOrReplace(
       Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
       throws NoSuchNamespaceException {
-    String provider = properties != null ? properties.get("provider") : null;
+    String provider = properties.get("provider");
+    TableCatalog catalog;
     if (useLance(provider)) {
-      return stageLanceCreateOrReplace(ident, schema, partitions, properties);
+      if (asStagingLanceCatalog != null) {
+        return asStagingLanceCatalog.stageCreateOrReplace(ident, schema, partitions, properties);
+      }
+      catalog = lanceCatalog;
+    } else {
+      TableCatalog delegate = getSessionCatalog();
+      if (delegate instanceof StagingTableCatalog) {
+        return ((StagingTableCatalog) delegate)
+            .stageCreateOrReplace(ident, schema, partitions, properties);
+      }
+      catalog = delegate;
     }
-    return stageDelegateCreateOrReplace(ident, schema, partitions, properties);
-  }
 
-  private StagedTable stageLanceCreate(
-      Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
-      throws TableAlreadyExistsException, NoSuchNamespaceException {
-    if (asStagingLanceCatalog != null) {
-      return asStagingLanceCatalog.stageCreate(ident, schema, partitions, properties);
-    }
-    Table table = lanceCatalog.createTable(ident, schema, partitions, properties);
-    return new RollbackStagedTable(lanceCatalog, ident, table);
-  }
+    catalog.dropTable(ident);
 
-  private StagedTable stageLanceReplace(
-      Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
-      throws NoSuchNamespaceException, NoSuchTableException {
-    if (asStagingLanceCatalog != null) {
-      return asStagingLanceCatalog.stageReplace(ident, schema, partitions, properties);
-    }
-    // For non-staging Lance catalog, we must ensure the table exists (REPLACE semantics).
-    // Note: drop-then-create has a TOCTOU window. Iceberg handles this with recursive retry.
-    // For v1, we accept this limitation since concurrent table replacement is uncommon.
-    if (!lanceCatalog.tableExists(ident)) {
-      throw new NoSuchTableException(ident);
-    }
-    lanceCatalog.dropTable(ident);
     try {
-      Table table = lanceCatalog.createTable(ident, schema, partitions, properties);
-      return new RollbackStagedTable(lanceCatalog, ident, table);
+      Table table = catalog.createTable(ident, schema, partitions, properties);
+      return new RollbackStagedTable(catalog, ident, table);
     } catch (TableAlreadyExistsException e) {
-      throw new RuntimeException("Race condition: table recreated after drop", e);
-    }
-  }
-
-  private StagedTable stageLanceCreateOrReplace(
-      Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
-      throws NoSuchNamespaceException {
-    if (asStagingLanceCatalog != null) {
-      return asStagingLanceCatalog.stageCreateOrReplace(ident, schema, partitions, properties);
-    }
-    // Drop if exists, then create
-    if (lanceCatalog.tableExists(ident)) {
-      lanceCatalog.dropTable(ident);
-    }
-    try {
-      Table table = lanceCatalog.createTable(ident, schema, partitions, properties);
-      return new RollbackStagedTable(lanceCatalog, ident, table);
-    } catch (TableAlreadyExistsException e) {
-      throw new RuntimeException("Race condition: table recreated after drop", e);
-    }
-  }
-
-  private StagedTable stageDelegateCreate(
-      Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
-      throws TableAlreadyExistsException, NoSuchNamespaceException {
-    TableCatalog delegate = getSessionCatalog();
-    if (delegate instanceof StagingTableCatalog) {
-      return ((StagingTableCatalog) delegate).stageCreate(ident, schema, partitions, properties);
-    }
-    Table table = delegate.createTable(ident, schema, partitions, properties);
-    return new RollbackStagedTable(delegate, ident, table);
-  }
-
-  private StagedTable stageDelegateReplace(
-      Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
-      throws NoSuchNamespaceException, NoSuchTableException {
-    TableCatalog delegate = getSessionCatalog();
-    if (delegate instanceof StagingTableCatalog) {
-      return ((StagingTableCatalog) delegate).stageReplace(ident, schema, partitions, properties);
-    }
-    if (!delegate.tableExists(ident)) {
-      throw new NoSuchTableException(ident);
-    }
-    delegate.dropTable(ident);
-    try {
-      Table table = delegate.createTable(ident, schema, partitions, properties);
-      return new RollbackStagedTable(delegate, ident, table);
-    } catch (TableAlreadyExistsException e) {
-      throw new RuntimeException("Race condition: table recreated after drop", e);
-    }
-  }
-
-  private StagedTable stageDelegateCreateOrReplace(
-      Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
-      throws NoSuchNamespaceException {
-    TableCatalog delegate = getSessionCatalog();
-    if (delegate instanceof StagingTableCatalog) {
-      return ((StagingTableCatalog) delegate)
-          .stageCreateOrReplace(ident, schema, partitions, properties);
-    }
-    if (delegate.tableExists(ident)) {
-      delegate.dropTable(ident);
-    }
-    try {
-      Table table = delegate.createTable(ident, schema, partitions, properties);
-      return new RollbackStagedTable(delegate, ident, table);
-    } catch (TableAlreadyExistsException e) {
-      throw new RuntimeException("Race condition: table recreated after drop", e);
+      return stageCreateOrReplace(ident, schema, partitions, properties);
     }
   }
 

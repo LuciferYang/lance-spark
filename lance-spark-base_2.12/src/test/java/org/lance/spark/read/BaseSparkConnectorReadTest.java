@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -216,6 +217,29 @@ public abstract class BaseSparkConnectorReadTest {
       }
       assertTrue(found, "Expected batch_size validation error, got: " + e.getMessage());
     }
+  }
+
+  @Test
+  public void emptySchemaQueryShouldNotReadAllColumns() {
+    // SELECT 1 FROM table needs zero data columns from the scan.
+    // The scan should NOT project all table columns (x, y, b, c).
+    Dataset<Row> result = spark.sql("SELECT 1 FROM test_dataset1");
+    assertEquals(TestUtils.TestTable1Config.expectedValues.size(), result.collectAsList().size());
+
+    // The BatchScan should have an empty output (no data columns projected)
+    String physicalPlan = result.queryExecution().executedPlan().toString();
+    assertFalse(
+        physicalPlan.contains("x#"),
+        "Column 'x' should not be projected for SELECT 1: " + physicalPlan);
+    assertFalse(
+        physicalPlan.contains("y#"),
+        "Column 'y' should not be projected for SELECT 1: " + physicalPlan);
+    assertFalse(
+        physicalPlan.contains("b#"),
+        "Column 'b' should not be projected for SELECT 1: " + physicalPlan);
+    assertFalse(
+        physicalPlan.contains("c#"),
+        "Column 'c' should not be projected for SELECT 1: " + physicalPlan);
   }
 
   @Test

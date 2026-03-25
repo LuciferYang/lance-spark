@@ -57,7 +57,13 @@ public class LanceFragmentScanner implements AutoCloseable {
               inputPartition.getNamespaceImpl(),
               inputPartition.getNamespaceProperties());
       ScanOptions.Builder scanOptions = new ScanOptions.Builder();
-      scanOptions.columns(getColumnNames(inputPartition.getSchema()));
+      List<String> projectedColumns = getColumnNames(inputPartition.getSchema());
+      if (projectedColumns.isEmpty()) {
+        // Lance requires at least one projected column. Use _rowid as a lightweight
+        // sentinel so the scanner still returns the correct row count (e.g. SELECT 1).
+        scanOptions.withRowId(true);
+      }
+      scanOptions.columns(projectedColumns);
       if (inputPartition.getWhereCondition().isPresent()) {
         scanOptions.filter(inputPartition.getWhereCondition().get());
       }

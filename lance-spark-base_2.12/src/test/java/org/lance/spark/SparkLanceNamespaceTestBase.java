@@ -314,6 +314,35 @@ public abstract class SparkLanceNamespaceTestBase {
   }
 
   @Test
+  public void testDropColumnPruningViaCatalog() throws Exception {
+    // Reproduces the exact scenario from issue #334:
+    // spark.table("my_table").drop("x").filter("rand(42) < 0.01")
+    String tableName = generateTableName("drop_col_test");
+    String fullName = catalogName + ".default." + tableName;
+
+    spark.sql("CREATE TABLE " + fullName + " (x INT NOT NULL, y INT NOT NULL, b INT NOT NULL)");
+    spark.sql("INSERT INTO " + fullName + " VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)");
+
+    // The exact pattern from issue #334: spark.table(...).drop(...).filter(rand)
+    Dataset<Row> result = spark.table(fullName).drop("x").filter("rand(42) < 1.0");
+
+    // Schema should NOT contain "x"
+    assertEquals(2, result.schema().fields().length);
+    assertTrue(result.schema().getFieldIndex("x").isEmpty());
+
+    // Physical plan should NOT contain "x"
+    String physicalPlan = result.queryExecution().executedPlan().toString();
+    assertFalse(
+        physicalPlan.contains("x#"),
+        "Dropped column 'x' should not appear in the physical plan scan: " + physicalPlan);
+
+    // Data should have only y and b columns
+    List<Row> rows = result.collectAsList();
+    assertEquals(3, rows.size());
+    assertEquals(2, rows.get(0).size());
+  }
+
+  @Test
   public void testSparkSqlJoin() throws Exception {
     String tableName1 = generateTableName("join_table_1");
     String tableName2 = generateTableName("join_table_2");

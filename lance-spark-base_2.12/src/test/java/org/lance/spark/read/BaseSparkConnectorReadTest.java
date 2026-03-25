@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -216,6 +217,75 @@ public abstract class BaseSparkConnectorReadTest {
       }
       assertTrue(found, "Expected batch_size validation error, got: " + e.getMessage());
     }
+  }
+
+  @Test
+  public void dropColumnPruning() {
+    // Verifies that dropped columns are actually pruned from the scan (issue #334).
+    // After drop("x"), only [y, b, c] should be in the scan schema.
+    Dataset<Row> dropped = data.drop("x");
+    assertEquals(3, dropped.schema().fields().length);
+    assertTrue(dropped.schema().getFieldIndex("x").isEmpty());
+
+    // Verify that the physical plan's scan does not include the dropped column
+    String physicalPlan = dropped.queryExecution().executedPlan().toString();
+    assertFalse(
+        physicalPlan.contains("x#"),
+        "Dropped column 'x' should not appear in the physical plan scan");
+
+    // Verify data correctness after drop
+    List<Row> rows = dropped.collectAsList();
+    assertEquals(TestUtils.TestTable1Config.expectedValues.size(), rows.size());
+    for (int i = 0; i < rows.size(); i++) {
+      Row row = rows.get(i);
+      List<Long> expected = TestUtils.TestTable1Config.expectedValues.get(i);
+      assertEquals(3, row.size());
+      assertEquals(expected.get(1), row.getLong(0)); // y
+      assertEquals(expected.get(2), row.getLong(1)); // b
+      assertEquals(expected.get(3), row.getLong(2)); // c
+    }
+  }
+
+  @Test
+  public void dropColumnWithFilter() {
+    // Verifies column pruning works with non-deterministic filters (issue #334).
+    // The dropped column "x" should not appear in the BatchScan.
+    Dataset<Row> result = data.drop("x").filter("rand(42) < 1.0");
+    assertEquals(3, result.schema().fields().length);
+    assertTrue(result.schema().getFieldIndex("x").isEmpty());
+
+    // Verify that the physical plan's scan does not include the dropped column
+    String physicalPlan = result.queryExecution().executedPlan().toString();
+    assertFalse(
+        physicalPlan.contains("x#"),
+        "Dropped column 'x' should not appear in the physical plan scan");
+
+    // rand(42) generates values in [0.0, 1.0), so < 1.0 is always true
+    List<Row> rows = result.collectAsList();
+    assertEquals(TestUtils.TestTable1Config.expectedValues.size(), rows.size());
+    assertEquals(3, rows.get(0).size());
+  }
+
+  @Test
+  public void selectColumnPruning() {
+    // Verifies that selecting non-contiguous columns prunes unneeded columns from the scan.
+    Dataset<Row> selected = data.select("y", "c");
+    assertEquals(2, selected.schema().fields().length);
+
+    // Verify that the physical plan's scan includes only the selected columns
+    String physicalPlan = selected.queryExecution().executedPlan().toString();
+    assertFalse(
+        physicalPlan.contains("x#"),
+        "Unselected column 'x' should not appear in the physical plan scan");
+    assertFalse(
+        physicalPlan.contains("b#"),
+        "Unselected column 'b' should not appear in the physical plan scan");
+
+    validateData(
+        selected,
+        TestUtils.TestTable1Config.expectedValues.stream()
+            .map(row -> Arrays.asList(row.get(1), row.get(3)))
+            .collect(Collectors.toList()));
   }
 
   @Test

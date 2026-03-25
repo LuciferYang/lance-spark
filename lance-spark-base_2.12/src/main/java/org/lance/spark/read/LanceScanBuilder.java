@@ -42,6 +42,8 @@ import org.apache.spark.sql.types.ArrayType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +56,8 @@ public class LanceScanBuilder
         SupportsPushDownOffset,
         SupportsPushDownTopN,
         SupportsPushDownAggregates {
+  private static final Logger LOG = LoggerFactory.getLogger(LanceScanBuilder.class);
+
   private final LanceSparkReadOptions readOptions;
   private StructType schema;
 
@@ -158,6 +162,8 @@ public class LanceScanBuilder
 
   @Override
   public void pruneColumns(StructType requiredSchema) {
+    LOG.debug(
+        "pruneColumns called: requiredSchema={}, currentSchema={}", requiredSchema, this.schema);
     if (!requiredSchema.isEmpty()) {
       // Get all columns if selecting columns empty(eg: resultDataFrame.count())
       this.schema = requiredSchema;

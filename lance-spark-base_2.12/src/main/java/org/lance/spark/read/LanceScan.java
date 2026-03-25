@@ -195,6 +195,7 @@ public class LanceScan
     if (pushedAggregation.isPresent()) {
       return new StructType().add("count", org.apache.spark.sql.types.DataTypes.LongType);
     }
+    LOG.debug("readSchema: {}", schema);
     return schema;
   }
 

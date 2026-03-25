@@ -23,6 +23,8 @@ import org.lance.spark.read.LanceInputPartition;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -30,6 +32,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public class LanceFragmentScanner implements AutoCloseable {
+  private static final Logger LOG = LoggerFactory.getLogger(LanceFragmentScanner.class);
+
   private final LanceScanner scanner;
   private final int fragmentId;
   private final boolean withFragemtId;
@@ -155,6 +159,7 @@ public class LanceFragmentScanner implements AutoCloseable {
       columns.add(LanceConstant.ROW_CREATED_AT_VERSION);
     }
 
+    LOG.debug("Projected columns for fragment scan: {}", columns);
     return columns;
   }
 }

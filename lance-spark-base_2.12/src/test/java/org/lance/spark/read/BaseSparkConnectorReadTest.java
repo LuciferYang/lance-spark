@@ -285,9 +285,7 @@ public abstract class BaseSparkConnectorReadTest {
   public void nestedSubqueryShouldPruneUnusedColumns() {
     Dataset<Row> result =
         spark.sql(
-            "SELECT x FROM ("
-                + "  SELECT x, y FROM test_dataset1 WHERE x > 1"
-                + ") as subquery");
+            "SELECT x FROM (" + "  SELECT x, y FROM test_dataset1 WHERE x > 1" + ") as subquery");
 
     // x > 1 keeps rows: (2,4,6,-2) and (3,6,9,-3)
     List<Row> rows = result.collectAsList();
@@ -308,8 +306,8 @@ public abstract class BaseSparkConnectorReadTest {
    * Regression test for <a href="https://github.com/lance-format/lance-spark/issues/334">#334</a>:
    * DataFrame drop() followed by a non-pushdown filter should prune the dropped column.
    *
-   * <p>This is the original pattern reported in the issue:
-   * {@code spark.table("my_table").drop("col").filter("rand(42) < 0.01")}
+   * <p>This is the original pattern reported in the issue: {@code
+   * spark.table("my_table").drop("col").filter("rand(42) < 0.01")}
    */
   @Test
   public void dropColumnWithFilterShouldPruneDroppedColumn() {

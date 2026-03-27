@@ -31,6 +31,12 @@ import org.apache.spark.sql.sources.Or;
 import org.apache.spark.sql.sources.StringContains;
 import org.apache.spark.sql.sources.StringEndsWith;
 import org.apache.spark.sql.sources.StringStartsWith;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DateType;
+import org.apache.spark.sql.types.DecimalType;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.types.TimestampType;
 
 import java.math.BigDecimal;
 import java.sql.Date;
@@ -45,15 +51,17 @@ public class FilterPushDown {
    * Create SQL 'where clause' from Spark filters.
    *
    * @param filters Supported spark filters
+   * @param schema the full table schema, used for type-aware literal compilation
    * @return where clause, or Optional.empty() if filters do not exist
    */
-  public static Optional<String> compileFiltersToSqlWhereClause(Filter[] filters) {
+  public static Optional<String> compileFiltersToSqlWhereClause(
+      Filter[] filters, StructType schema) {
     if (filters.length == 0) {
       return Optional.empty();
     }
     List<String> compiledFilters = new ArrayList<>();
     for (Filter filter : filters) {
-      compileFilter(filter).ifPresent(compiledFilters::add);
+      compileFilter(filter, schema).ifPresent(compiledFilters::add);
     }
     String whereClause =
         compiledFilters.stream()
@@ -123,33 +131,38 @@ public class FilterPushDown {
     }
   }
 
-  private static Optional<String> compileFilter(Filter filter) {
+  private static Optional<String> compileFilter(Filter filter, StructType schema) {
     if (filter instanceof GreaterThan) {
       GreaterThan f = (GreaterThan) filter;
-      return Optional.of(f.attribute() + " > " + compileValue(f.value()));
+      return Optional.of(
+          f.attribute() + " > " + compileValue(f.value(), columnType(schema, f.attribute())));
     } else if (filter instanceof LessThan) {
       LessThan f = (LessThan) filter;
-      return Optional.of(f.attribute() + " < " + compileValue(f.value()));
+      return Optional.of(
+          f.attribute() + " < " + compileValue(f.value(), columnType(schema, f.attribute())));
     } else if (filter instanceof LessThanOrEqual) {
       LessThanOrEqual f = (LessThanOrEqual) filter;
-      return Optional.of(f.attribute() + " <= " + compileValue(f.value()));
+      return Optional.of(
+          f.attribute() + " <= " + compileValue(f.value(), columnType(schema, f.attribute())));
     } else if (filter instanceof GreaterThanOrEqual) {
       GreaterThanOrEqual f = (GreaterThanOrEqual) filter;
-      return Optional.of(f.attribute() + " >= " + compileValue(f.value()));
+      return Optional.of(
+          f.attribute() + " >= " + compileValue(f.value(), columnType(schema, f.attribute())));
     } else if (filter instanceof EqualTo) {
       EqualTo f = (EqualTo) filter;
-      return Optional.of(f.attribute() + " == " + compileValue(f.value()));
+      return Optional.of(
+          f.attribute() + " == " + compileValue(f.value(), columnType(schema, f.attribute())));
     } else if (filter instanceof Or) {
       Or f = (Or) filter;
-      Optional<String> left = compileFilter(f.left());
-      Optional<String> right = compileFilter(f.right());
+      Optional<String> left = compileFilter(f.left(), schema);
+      Optional<String> right = compileFilter(f.right(), schema);
       if (left.isEmpty()) return right;
       if (right.isEmpty()) return left;
       return Optional.of(String.format("(%s) OR (%s)", left.get(), right.get()));
     } else if (filter instanceof And) {
       And f = (And) filter;
-      Optional<String> left = compileFilter(f.left());
-      Optional<String> right = compileFilter(f.right());
+      Optional<String> left = compileFilter(f.left(), schema);
+      Optional<String> right = compileFilter(f.right(), schema);
       if (left.isEmpty()) return right;
       if (right.isEmpty()) return left;
       return Optional.of(String.format("(%s) AND (%s)", left.get(), right.get()));
@@ -161,14 +174,15 @@ public class FilterPushDown {
       return Optional.of(String.format("%s IS NOT NULL", f.attribute()));
     } else if (filter instanceof Not) {
       Not f = (Not) filter;
-      Optional<String> child = compileFilter(f.child());
+      Optional<String> child = compileFilter(f.child(), schema);
       if (child.isEmpty()) return child;
       return Optional.of(String.format("NOT (%s)", child.get()));
     } else if (filter instanceof In) {
       In in = (In) filter;
+      DataType colType = columnType(schema, in.attribute());
       String values =
           Arrays.stream(in.values())
-              .map(FilterPushDown::compileValue)
+              .map(v -> compileValue(v, colType))
               .collect(Collectors.joining(","));
       return Optional.of(String.format("%s IN (%s)", in.attribute(), values));
     }
@@ -176,20 +190,56 @@ public class FilterPushDown {
     return Optional.empty();
   }
 
-  private static String compileValue(Object value) {
+  /**
+   * Looks up the data type of a column in the schema.
+   *
+   * @return the column's DataType, or null if the column is not found
+   */
+  private static DataType columnType(StructType schema, String attribute) {
+    if (schema == null) {
+      return null;
+    }
+    try {
+      StructField field = schema.apply(attribute);
+      return field.dataType();
+    } catch (IllegalArgumentException e) {
+      return null;
+    }
+  }
+
+  private static String compileValue(Object value, DataType columnType) {
     if (value instanceof Date) {
       return "date '" + value + "'";
     } else if (value instanceof Timestamp) {
       return "timestamp '" + value + "'";
     } else if (value instanceof String) {
-      return "'" + value + "'";
+      String s = (String) value;
+      if (columnType instanceof DateType) {
+        return "date '" + s + "'";
+      } else if (columnType instanceof TimestampType) {
+        return "timestamp '" + s + "'";
+      }
+      return "'" + s + "'";
     } else if (value instanceof BigDecimal) {
       BigDecimal bd = (BigDecimal) value;
+      if (columnType instanceof DecimalType) {
+        DecimalType dt = (DecimalType) columnType;
+        return "CAST("
+            + bd.toPlainString()
+            + " AS DECIMAL("
+            + dt.precision()
+            + ", "
+            + dt.scale()
+            + "))";
+      }
       int scale = bd.scale();
       // Java returns precision=1 for zero regardless of scale (e.g. 0.00 → precision=1, scale=2).
       // Arrow requires precision >= scale, so clamp precision up if needed.
       int precision = Math.max(bd.precision(), scale);
       return "CAST(" + bd.toPlainString() + " AS DECIMAL(" + precision + ", " + scale + "))";
+    } else if (value instanceof Number && columnType instanceof DecimalType) {
+      DecimalType dt = (DecimalType) columnType;
+      return "CAST(" + value + " AS DECIMAL(" + dt.precision() + ", " + dt.scale() + "))";
     } else if (value instanceof Object[]) {
       Object[] array = (Object[]) value;
       StringBuilder sb = new StringBuilder();
@@ -197,7 +247,7 @@ public class FilterPushDown {
         if (sb.length() > 0) {
           sb.append(", ");
         }
-        sb.append(compileValue(obj));
+        sb.append(compileValue(obj, columnType));
       }
       return sb.toString();
     } else {

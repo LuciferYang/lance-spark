@@ -55,6 +55,7 @@ public class LanceScanBuilder
         SupportsPushDownTopN,
         SupportsPushDownAggregates {
   private final LanceSparkReadOptions readOptions;
+  private final StructType fullSchema;
   private StructType schema;
 
   private Filter[] pushedFilters = new Filter[0];
@@ -84,6 +85,7 @@ public class LanceScanBuilder
       java.util.Map<String, String> initialStorageOptions,
       String namespaceImpl,
       java.util.Map<String, String> namespaceProperties) {
+    this.fullSchema = schema;
     this.schema = schema;
     this.readOptions = readOptions;
     this.initialStorageOptions = initialStorageOptions;
@@ -140,7 +142,8 @@ public class LanceScanBuilder
     // Close the lazily opened dataset - it's no longer needed after build
     closeLazyDataset();
 
-    Optional<String> whereCondition = FilterPushDown.compileFiltersToSqlWhereClause(pushedFilters);
+    Optional<String> whereCondition =
+        FilterPushDown.compileFiltersToSqlWhereClause(pushedFilters, fullSchema);
     return new LanceScan(
         schema,
         readOptions,

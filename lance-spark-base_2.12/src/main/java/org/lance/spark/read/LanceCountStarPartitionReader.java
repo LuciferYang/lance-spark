@@ -14,10 +14,8 @@
 package org.lance.spark.read;
 
 import org.lance.Dataset;
-import org.lance.ReadOptions;
 import org.lance.ipc.LanceScanner;
 import org.lance.ipc.ScanOptions;
-import org.lance.namespace.LanceNamespaceStorageOptionsProvider;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.vectorized.LanceArrowColumnVector;
@@ -34,7 +32,6 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Partition reader for pushed down aggregates. This reader computes the aggregate result directly
@@ -94,32 +91,15 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
   }
 
   private Dataset openDataset(LanceSparkReadOptions readOptions) {
-    Map<String, String> merged =
-        LanceRuntime.mergeStorageOptions(
-            readOptions.getStorageOptions(), inputPartition.getInitialStorageOptions());
-    LanceNamespaceStorageOptionsProvider provider =
-        LanceRuntime.getOrCreateStorageOptionsProvider(
-            inputPartition.getNamespaceImpl(),
-            inputPartition.getNamespaceProperties(),
-            readOptions.getTableId());
-
-    ReadOptions.Builder builder =
-        new ReadOptions.Builder()
-            .setStorageOptions(merged)
-            .setSession(LanceRuntime.session(readOptions.getCatalogName()));
-
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
-    if (readOptions.getVersion() != null) {
-      builder.setVersion(readOptions.getVersion());
-    }
-
-    return Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .uri(readOptions.getDatasetUri())
-        .readOptions(builder.build())
-        .build();
+    return LanceRuntime.openDataset(
+        readOptions.getDatasetUri(),
+        readOptions.getCatalogName(),
+        readOptions.getVersion() != null ? (long) readOptions.getVersion() : null,
+        readOptions.getStorageOptions(),
+        inputPartition.getInitialStorageOptions(),
+        inputPartition.getNamespaceImpl(),
+        inputPartition.getNamespaceProperties(),
+        readOptions.getTableId());
   }
 
   private ColumnarBatch createCountResultBatch(long count, StructType resultSchema) {

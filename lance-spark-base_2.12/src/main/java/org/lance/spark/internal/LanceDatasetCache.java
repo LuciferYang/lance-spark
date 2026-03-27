@@ -15,8 +15,6 @@ package org.lance.spark.internal;
 
 import org.lance.Dataset;
 import org.lance.Fragment;
-import org.lance.ReadOptions;
-import org.lance.namespace.LanceNamespaceStorageOptionsProvider;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 
@@ -32,7 +30,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * Cache for Lance datasets with session sharing.
@@ -44,36 +41,13 @@ import java.util.stream.Collectors;
  *       data
  *   <li>Session sharing: all datasets use the global session from LanceRuntime for efficient cache
  *       sharing
- *   <li>Fragment caching: fragments are pre-loaded and cached per dataset
+ *   <li>On-demand fragment loading: fragments are fetched individually via {@code
+ *       dataset.getFragment(id)} rather than pre-loading all fragment metadata
  * </ul>
  */
 public class LanceDatasetCache {
 
   private static final Logger LOG = LoggerFactory.getLogger(LanceDatasetCache.class);
-
-  /** Cached dataset with pre-loaded fragments. */
-  public static class CachedDataset {
-    private final Dataset dataset;
-    private final Map<Integer, Fragment> fragments;
-
-    CachedDataset(Dataset dataset) {
-      this.dataset = dataset;
-      this.fragments =
-          dataset.getFragments().stream().collect(Collectors.toMap(Fragment::getId, f -> f));
-    }
-
-    public Dataset getDataset() {
-      return dataset;
-    }
-
-    public Map<Integer, Fragment> getFragments() {
-      return fragments;
-    }
-
-    public Fragment getFragment(int fragmentId) {
-      return fragments.get(fragmentId);
-    }
-  }
 
   /**
    * Cache key for dataset lookup.
@@ -167,29 +141,36 @@ public class LanceDatasetCache {
     }
   }
 
-  private static final LoadingCache<DatasetCacheKey, CachedDataset> CACHE =
+  private static final LoadingCache<DatasetCacheKey, Dataset> CACHE =
       CacheBuilder.newBuilder()
           .maximumSize(100)
           .expireAfterAccess(1, TimeUnit.HOURS)
           .removalListener(
-              (RemovalListener<DatasetCacheKey, CachedDataset>)
+              (RemovalListener<DatasetCacheKey, Dataset>)
                   notification -> {
-                    CachedDataset cached = notification.getValue();
-                    if (cached != null && cached.getDataset() != null) {
+                    Dataset dataset = notification.getValue();
+                    if (dataset != null) {
                       LOG.debug(
                           "Closing cached dataset: {} (reason: {})",
                           notification.getKey(),
                           notification.getCause());
-                      cached.getDataset().close();
+                      dataset.close();
                     }
                   })
           .build(
-              new CacheLoader<DatasetCacheKey, CachedDataset>() {
+              new CacheLoader<DatasetCacheKey, Dataset>() {
                 @Override
-                public CachedDataset load(DatasetCacheKey key) {
+                public Dataset load(DatasetCacheKey key) {
                   LOG.debug("Opening dataset for cache: {}", key);
-                  Dataset dataset = openDataset(key);
-                  return new CachedDataset(dataset);
+                  return LanceRuntime.openDataset(
+                      key.getUri(),
+                      key.getCatalogName(),
+                      key.getVersion(),
+                      key.getStorageOptions(),
+                      key.getInitialStorageOptions(),
+                      key.getNamespaceImpl(),
+                      key.getNamespaceProperties(),
+                      key.getTableId());
                 }
               });
 
@@ -208,7 +189,7 @@ public class LanceDatasetCache {
    * @param namespaceProperties namespace connection properties
    * @return the cached dataset
    */
-  public static CachedDataset getDataset(
+  public static Dataset getDataset(
       LanceSparkReadOptions readOptions,
       Map<String, String> initialStorageOptions,
       String namespaceImpl,
@@ -246,45 +227,16 @@ public class LanceDatasetCache {
       Map<String, String> initialStorageOptions,
       String namespaceImpl,
       Map<String, String> namespaceProperties) {
-    CachedDataset cached =
+    Dataset dataset =
         getDataset(readOptions, initialStorageOptions, namespaceImpl, namespaceProperties);
-    Fragment fragment = cached.getFragment(fragmentId);
+    Fragment fragment = dataset.getFragment(fragmentId);
     if (fragment == null) {
       throw new IllegalStateException(
           String.format(
-              "Fragment %d not found in dataset at %s (version=%s). Available fragments: %s",
-              fragmentId,
-              readOptions.getDatasetUri(),
-              readOptions.getVersion(),
-              cached.getFragments().keySet()));
+              "Fragment %d not found in dataset at %s (version=%s)",
+              fragmentId, readOptions.getDatasetUri(), readOptions.getVersion()));
     }
     return fragment;
-  }
-
-  private static Dataset openDataset(DatasetCacheKey key) {
-    Map<String, String> merged =
-        LanceRuntime.mergeStorageOptions(key.getStorageOptions(), key.getInitialStorageOptions());
-    LanceNamespaceStorageOptionsProvider provider =
-        LanceRuntime.getOrCreateStorageOptionsProvider(
-            key.getNamespaceImpl(), key.getNamespaceProperties(), key.getTableId());
-
-    ReadOptions.Builder builder =
-        new ReadOptions.Builder()
-            .setStorageOptions(merged)
-            .setSession(LanceRuntime.session(key.getCatalogName()));
-
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
-    if (key.getVersion() != null) {
-      builder.setVersion(key.getVersion());
-    }
-
-    return Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .uri(key.getUri())
-        .readOptions(builder.build())
-        .build();
   }
 
   /** Clears the cache. Primarily for testing. */

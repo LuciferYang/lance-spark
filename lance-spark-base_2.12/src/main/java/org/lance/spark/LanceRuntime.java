@@ -13,6 +13,8 @@
  */
 package org.lance.spark;
 
+import org.lance.Dataset;
+import org.lance.ReadOptions;
 import org.lance.Session;
 import org.lance.namespace.LanceNamespace;
 import org.lance.namespace.LanceNamespaceStorageOptionsProvider;
@@ -259,5 +261,47 @@ public final class LanceRuntime {
       merged.putAll(initialStorageOptions);
     }
     return merged;
+  }
+
+  /**
+   * Opens a Lance dataset with the standard executor-side configuration.
+   *
+   * <p>This is the unified entry point for opening datasets on Spark executors. It handles storage
+   * options merging, session wiring, namespace provider creation, and version pinning.
+   *
+   * @param uri the dataset URI
+   * @param catalogName the catalog name for session isolation
+   * @param version the explicit dataset version (null for latest)
+   * @param storageOptions base storage options
+   * @param initialStorageOptions initial options from describeTable (can be null)
+   * @param namespaceImpl namespace implementation type (can be null)
+   * @param namespaceProperties namespace connection properties (can be null)
+   * @param tableId table identifier for namespace operations (can be null)
+   * @return the opened Dataset
+   */
+  public static Dataset openDataset(
+      String uri,
+      String catalogName,
+      Long version,
+      Map<String, String> storageOptions,
+      Map<String, String> initialStorageOptions,
+      String namespaceImpl,
+      Map<String, String> namespaceProperties,
+      List<String> tableId) {
+    Map<String, String> merged = mergeStorageOptions(storageOptions, initialStorageOptions);
+    LanceNamespaceStorageOptionsProvider provider =
+        getOrCreateStorageOptionsProvider(namespaceImpl, namespaceProperties, tableId);
+
+    ReadOptions.Builder builder =
+        new ReadOptions.Builder().setStorageOptions(merged).setSession(session(catalogName));
+
+    if (provider != null) {
+      builder.setStorageOptionsProvider(provider);
+    }
+    if (version != null) {
+      builder.setVersion(version);
+    }
+
+    return Dataset.open().allocator(allocator()).uri(uri).readOptions(builder.build()).build();
   }
 }

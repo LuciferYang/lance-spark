@@ -198,31 +198,29 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   @Override
   public Table loadTable(Identifier ident) throws NoSuchTableException {
-    // Pre-check with tableExists to avoid triggering RuntimeException from loadTableInternal
-    // when the table doesn't exist in Lance. This is a workaround for the lance-core JNI bug
-    // where describeTable throws RuntimeException instead of NoSuchTableException for missing
-    // tables (see PR #326). Once that fix is merged, this can be simplified to Iceberg's
-    // try-catch pattern.
-    if (lanceCatalog.tableExists(ident)) {
+    try {
       return lanceCatalog.loadTable(ident);
+    } catch (NoSuchTableException e) {
+      return getSessionCatalog().loadTable(ident);
     }
-    return getSessionCatalog().loadTable(ident);
   }
 
   @Override
   public Table loadTable(Identifier ident, long timestamp) throws NoSuchTableException {
-    if (lanceCatalog.tableExists(ident)) {
+    try {
       return lanceCatalog.loadTable(ident, timestamp);
+    } catch (NoSuchTableException e) {
+      return getSessionCatalog().loadTable(ident, timestamp);
     }
-    return getSessionCatalog().loadTable(ident, timestamp);
   }
 
   @Override
   public Table loadTable(Identifier ident, String version) throws NoSuchTableException {
-    if (lanceCatalog.tableExists(ident)) {
+    try {
       return lanceCatalog.loadTable(ident, version);
+    } catch (NoSuchTableException e) {
+      return getSessionCatalog().loadTable(ident, version);
     }
-    return getSessionCatalog().loadTable(ident, version);
   }
 
   @Override
@@ -248,12 +246,35 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   @Override
   public boolean dropTable(Identifier ident) {
-    return lanceCatalog.dropTable(ident) || getSessionCatalog().dropTable(ident);
+    boolean droppedFromLance = lanceCatalog.dropTable(ident);
+    if (droppedFromLance) {
+      if (getSessionCatalog().tableExists(ident)) {
+        LOG.warn(
+            "Table '{}' exists in both Lance and delegate catalog. "
+                + "Dropped from Lance only. To drop the delegate copy, access the "
+                + "underlying catalog directly (e.g., Hive metastore CLI or "
+                + "spark.sessionState.catalog).",
+            ident);
+      }
+      return true;
+    }
+    return getSessionCatalog().dropTable(ident);
   }
 
   @Override
   public boolean purgeTable(Identifier ident) {
-    return lanceCatalog.purgeTable(ident) || getSessionCatalog().purgeTable(ident);
+    boolean purgedFromLance = lanceCatalog.purgeTable(ident);
+    if (purgedFromLance) {
+      if (getSessionCatalog().tableExists(ident)) {
+        LOG.error(
+            "Table '{}' exists in both Lance and delegate catalog. "
+                + "Purged from Lance only (irrecoverable). Delegate catalog copy remains. "
+                + "Manual cleanup required via the underlying catalog.",
+            ident);
+      }
+      return true;
+    }
+    return getSessionCatalog().purgeTable(ident);
   }
 
   @Override
@@ -339,7 +360,7 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
       Table table = catalog.createTable(ident, schema, partitions, properties);
       return new RollbackStagedTable(catalog, ident, table);
     } catch (TableAlreadyExistsException e) {
-      return stageReplace(ident, schema, partitions, properties);
+      throw new RuntimeException("Race condition: table recreated after drop", e);
     }
   }
 
@@ -369,7 +390,7 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
       Table table = catalog.createTable(ident, schema, partitions, properties);
       return new RollbackStagedTable(catalog, ident, table);
     } catch (TableAlreadyExistsException e) {
-      return stageCreateOrReplace(ident, schema, partitions, properties);
+      throw new RuntimeException("Race condition: table recreated after drop", e);
     }
   }
 

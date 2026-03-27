@@ -300,9 +300,9 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
 
   @Override
   public Identifier[] listTables(String[] namespace) throws NoSuchNamespaceException {
-    // Always delegate listing to the session catalog. Note: Lance-only tables may not
-    // appear in this listing since they are stored in the Lance namespace backend, not
-    // the delegate's metastore. This matches Iceberg's session catalog behavior.
+    // Always delegate listing to the session catalog. Lance-only tables will not appear
+    // in this listing since they are stored in the Lance namespace backend, not the
+    // delegate's metastore. This matches Iceberg's session catalog behavior.
     return getSessionCatalog().listTables(namespace);
   }
 
@@ -467,9 +467,8 @@ public abstract class BaseLanceNamespaceSparkSessionCatalog
       }
     }
 
-    // If neither catalog knows the namespace, throw
+    // If no functions were found, verify the namespace actually exists
     if (functions.isEmpty()) {
-      // Check if the namespace actually exists in either catalog
       if (!namespaceExists(namespace)) {
         throw new NoSuchNamespaceException(namespace);
       }

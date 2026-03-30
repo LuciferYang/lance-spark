@@ -108,19 +108,21 @@ public class LanceScan
   @Override
   public InputPartition[] planInputPartitions() {
     LanceSplit.ScanPlanResult planResult = LanceSplit.planScan(readOptions);
-    List<LanceSplit> splits = pruneByRowAddrFilters(planResult.getSplits());
+    List<LanceSplit> prunedSplits =
+        pruneByLimit(
+            pruneByRowAddrFilters(planResult.getSplits()), planResult.getFragmentRowCounts());
 
     // Use resolved version for snapshot isolation - ensures all workers read the same version
     LanceSparkReadOptions resolvedReadOptions =
         readOptions.withVersion((int) planResult.getResolvedVersion());
 
-    return IntStream.range(0, splits.size())
+    return IntStream.range(0, prunedSplits.size())
         .mapToObj(
             i ->
                 new LanceInputPartition(
                     schema,
                     i,
-                    splits.get(i),
+                    prunedSplits.get(i),
                     resolvedReadOptions,
                     whereConditions,
                     limit,
@@ -132,6 +134,49 @@ public class LanceScan
                     namespaceImpl,
                     namespaceProperties))
         .toArray(InputPartition[]::new);
+  }
+
+  /**
+   * Prunes splits based on the pushed limit — only retains enough fragments to satisfy the limit
+   * when no filters or topN sort orders are pushed.
+   *
+   * <p>When a LIMIT is present, Spark's {@code CollectLimit} operator reads partitions
+   * sequentially. Reducing the number of partitions directly reduces the number of sequential
+   * steps. Without filters, per-fragment row counts from metadata can determine exactly how many
+   * fragments are needed.
+   *
+   * <p>When filters are present, per-fragment selectivity is unknown, so all partitions are
+   * retained.
+   */
+  private List<LanceSplit> pruneByLimit(
+      List<LanceSplit> splits, java.util.Map<Integer, Long> fragmentRowCounts) {
+    if (!limit.isPresent()
+        || whereConditions.isPresent()
+        || topNSortOrders.isPresent()
+        || pushedAggregation.isPresent()
+        || readOptions.getNearest() != null) {
+      return splits;
+    }
+    long remaining = limit.get();
+    int needed = 0;
+    for (int i = 0; i < splits.size(); i++) {
+      needed++;
+      int fragmentId = splits.get(i).getFragments().get(0);
+      long rowCount = fragmentRowCounts.getOrDefault(fragmentId, 0L);
+      remaining -= rowCount;
+      if (remaining <= 0) {
+        break;
+      }
+    }
+    if (needed < splits.size()) {
+      LOG.debug(
+          "Pruned splits by limit {}: {} of {} splits retained",
+          limit.get(),
+          needed,
+          splits.size());
+      return splits.subList(0, needed);
+    }
+    return splits;
   }
 
   /**

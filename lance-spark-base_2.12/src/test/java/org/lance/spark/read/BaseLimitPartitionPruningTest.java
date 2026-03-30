@@ -94,8 +94,11 @@ public abstract class BaseLimitPartitionPruningTest {
 
     assertTrue(
         partitionCount < NUM_FRAGMENTS,
-        "Expected fewer than " + NUM_FRAGMENTS + " partitions for LIMIT 10,"
-            + " but got " + partitionCount);
+        "Expected fewer than "
+            + NUM_FRAGMENTS
+            + " partitions for LIMIT 10,"
+            + " but got "
+            + partitionCount);
   }
 
   @Test
@@ -121,17 +124,14 @@ public abstract class BaseLimitPartitionPruningTest {
         "Without LIMIT, all " + NUM_FRAGMENTS + " partitions should be used");
   }
 
-  /**
-   * Extracts the number of input partitions from the physical plan's BatchScanExec node.
-   */
+  /** Extracts the number of input partitions from the physical plan's BatchScanExec node. */
   private static int getInputPartitionCount(Dataset<Row> dataset) {
     SparkPlan plan = dataset.queryExecution().executedPlan();
     scala.collection.Seq<SparkPlan> leaves = plan.collectLeaves();
     for (int i = 0; i < leaves.size(); i++) {
       SparkPlan leaf = leaves.apply(i);
       if (leaf instanceof BatchScanExec) {
-        scala.collection.Seq<InputPartition> partitions =
-            ((BatchScanExec) leaf).inputPartitions();
+        scala.collection.Seq<InputPartition> partitions = ((BatchScanExec) leaf).inputPartitions();
         return partitions.size();
       }
     }

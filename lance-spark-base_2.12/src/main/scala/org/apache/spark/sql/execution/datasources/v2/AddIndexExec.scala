@@ -28,7 +28,7 @@ import org.json4s.JsonAST._
 import org.json4s.jackson.JsonMethods.{compact, render}
 import org.lance.{CommitBuilder, Dataset, ReadOptions, Transaction}
 import org.lance.index.{Index, IndexOptions, IndexParams, IndexType}
-import org.lance.index.scalar.{BTreeIndexParams, ScalarIndexParams}
+import org.lance.index.scalar.{BitmapIndexParams, BTreeIndexParams, ScalarIndexParams}
 import org.lance.operation.{CreateIndex => AddIndexOperation}
 import org.lance.spark.{BaseLanceNamespaceSparkCatalog, LanceDataset, LanceRuntime, LanceSparkReadOptions}
 import org.lance.spark.arrow.LanceArrowWriter
@@ -40,12 +40,15 @@ import java.util.{Collections, Optional, UUID}
 import scala.collection.JavaConverters._
 
 /**
- * Physical execution of distributed CREATE INDEX (ALTER TABLE ... CREATE INDEX ...) for Lance datasets.
+ * Physical execution of CREATE INDEX (ALTER TABLE ... CREATE INDEX ...) for Lance datasets.
  *
  * <ul>
- * <li>For BTREE index, it uses a range-based approach that redistributes and sorts data across partitions, creates indexes for each range in parallel, and finally merges them into a global index structure.
- * <li>For other index types, it processes each fragment independently in parallel, merges index metadata
- * and commits an index-creation transaction.
+ * <li>For BTREE index with range build mode, it redistributes and sorts data across partitions,
+ * creates indexes for each range in parallel, and finally merges them into a global index structure.
+ * <li>For BTREE (fragment mode) and FTS indexes, it processes each fragment independently in parallel,
+ * merges index metadata and commits an index-creation transaction.
+ * <li>For BITMAP index, it creates the index on the entire dataset at once via a single
+ * lance-core {@code createIndex} call, which handles training, replacement, and commit atomically.
  * </ul>
  */
 case class AddIndexExec(
@@ -84,54 +87,59 @@ case class AddIndexExec(
     val uuid = UUID.randomUUID()
     val indexType = IndexUtils.buildIndexType(method)
 
-    // Create distributed index job and run it
-    createIndexJob(lanceDataset, readOptions, uuid.toString, fragmentIds).run()
+    // Create index job and run it
+    val indexJob = createIndexJob(lanceDataset, readOptions, uuid.toString, fragmentIds)
+    indexJob.run()
 
-    val dataset = openDataset(readOptions)
-    try {
-      // Merge index metadata after all fragments are indexed
-      dataset.mergeIndexMetadata(uuid.toString, indexType, Optional.empty())
-
-      val fieldIds = dataset.getLanceSchema.fields().asScala
-        .filter(f => columns.contains(f.getName))
-        .map(_.getId)
-        .toList
-
-      val datasetVersion = dataset.version()
-
-      val index = Index
-        .builder()
-        .uuid(uuid)
-        .name(indexName)
-        .fields(fieldIds.map(java.lang.Integer.valueOf).asJava)
-        .datasetVersion(datasetVersion)
-        .indexVersion(0)
-        .fragments(fragmentIds.asJava)
-        .build()
-
-      // Find existing indices with the same name to mark as removed (for replace)
-      val removedIndices = dataset.getIndexes.asScala
-        .filter(_.name() == indexName)
-        .toList.asJava
-
-      val op = AddIndexOperation.builder()
-        .withNewIndices(Collections.singletonList(index))
-        .withRemovedIndices(removedIndices)
-        .build()
-      val txn = new Transaction.Builder()
-        .readVersion(dataset.version())
-        .operation(op)
-        .build()
+    // Whole-dataset index jobs (e.g., bitmap) handle the full lifecycle internally,
+    // so we skip the merge + manual transaction commit for those.
+    if (indexJob.requiresPostProcessing) {
+      val dataset = openDataset(readOptions)
       try {
-        val newDataset = new CommitBuilder(dataset)
-          .writeParams(readOptions.getStorageOptions)
-          .execute(txn)
-        newDataset.close()
+        // Merge index metadata after all fragments are indexed
+        dataset.mergeIndexMetadata(uuid.toString, indexType, Optional.empty())
+
+        val fieldIds = dataset.getLanceSchema.fields().asScala
+          .filter(f => columns.contains(f.getName))
+          .map(_.getId)
+          .toList
+
+        val datasetVersion = dataset.version()
+
+        val index = Index
+          .builder()
+          .uuid(uuid)
+          .name(indexName)
+          .fields(fieldIds.map(java.lang.Integer.valueOf).asJava)
+          .datasetVersion(datasetVersion)
+          .indexVersion(0)
+          .fragments(fragmentIds.asJava)
+          .build()
+
+        // Find existing indices with the same name to mark as removed (for replace)
+        val removedIndices = dataset.getIndexes.asScala
+          .filter(_.name() == indexName)
+          .toList.asJava
+
+        val op = AddIndexOperation.builder()
+          .withNewIndices(Collections.singletonList(index))
+          .withRemovedIndices(removedIndices)
+          .build()
+        val txn = new Transaction.Builder()
+          .readVersion(dataset.version())
+          .operation(op)
+          .build()
+        try {
+          val newDataset = new CommitBuilder(dataset)
+            .writeParams(readOptions.getStorageOptions)
+            .execute(txn)
+          newDataset.close()
+        } finally {
+          txn.close()
+        }
       } finally {
-        txn.close()
+        dataset.close()
       }
-    } finally {
-      dataset.close()
     }
 
     Seq(new GenericInternalRow(Array[Any](
@@ -202,6 +210,16 @@ case class AddIndexExec(
               initialStorageOpts)
         }
 
+      case IndexType.BITMAP =>
+        new WholeDatasetIndexJob(
+          this,
+          readOptions,
+          uuid,
+          nsImpl,
+          nsProps,
+          tableId,
+          initialStorageOpts)
+
       case _ =>
         new FragmentBasedIndexJob(
           this,
@@ -221,6 +239,13 @@ case class AddIndexExec(
  */
 trait IndexJob extends Serializable {
   def run(): Unit
+
+  /**
+   * Whether this job requires post-processing (merge index metadata + manual transaction commit).
+   * Distributed per-fragment jobs need this; whole-dataset jobs (e.g., bitmap) do not because
+   * lance-core handles the full index lifecycle internally.
+   */
+  def requiresPostProcessing: Boolean = true
 }
 
 /**
@@ -272,6 +297,58 @@ class FragmentBasedIndexJob(
       .parallelize(tasks, tasks.size)
       .map(t => t.execute())
       .collect()
+  }
+}
+
+/**
+ * A job implementation that creates an index on the entire dataset at once (not per-fragment).
+ * This is required for index types like bitmap that do not support fragment-level training.
+ *
+ * @param addIndexExec         The AddIndexExec instance that initiated this job
+ * @param readOptions          Configuration options for reading the Lance dataset
+ * @param uuid                 Unique identifier for this index operation
+ * @param nsImpl               Optional namespace implementation class for credential vending
+ * @param nsProps              Optional namespace properties for credential vending
+ * @param tableId              Optional table identifier for credential vending
+ * @param initialStorageOpts   Optional initial storage options for the dataset
+ */
+class WholeDatasetIndexJob(
+    addIndexExec: AddIndexExec,
+    readOptions: LanceSparkReadOptions,
+    uuid: String,
+    nsImpl: Option[String],
+    nsProps: Option[Map[String, String]],
+    tableId: Option[List[String]],
+    initialStorageOpts: Option[Map[String, String]]) extends IndexJob {
+
+  override def requiresPostProcessing: Boolean = false
+
+  override def run(): Unit = {
+    val scalarParams = BitmapIndexParams.builder().build()
+    val params = IndexParams.builder()
+      .setScalarIndexParams(scalarParams)
+      .build()
+
+    val columns = addIndexExec.columns.toList
+    val indexOptions = IndexOptions
+      .builder(java.util.Arrays.asList(columns: _*), IndexType.BITMAP, params)
+      .replace(true)
+      .withIndexName(addIndexExec.indexName)
+      .withIndexUUID(uuid)
+      .build()
+
+    val dataset = IndexUtils.openDatasetWithOptions(
+      readOptions,
+      initialStorageOpts,
+      nsImpl,
+      nsProps,
+      tableId)
+
+    try {
+      dataset.createIndex(indexOptions)
+    } finally {
+      dataset.close()
+    }
   }
 }
 
@@ -548,6 +625,7 @@ object IndexUtils {
   def buildIndexType(method: String): IndexType = {
     method match {
       case "btree" => IndexType.BTREE
+      case "bitmap" => IndexType.BITMAP
       case "fts" => IndexType.INVERTED
       case other => throw new UnsupportedOperationException(s"Unsupported index method: $other")
     }

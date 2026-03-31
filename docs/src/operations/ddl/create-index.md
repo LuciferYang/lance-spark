@@ -7,7 +7,7 @@ Creates a scalar index on a Lance table to accelerate queries.
 
 ## Overview
 
-The `CREATE INDEX` command builds an index on one or more columns of a Lance table. Indexing can improve the performance of queries that filter on the indexed columns. This operation is performed in a distributed manner, building indexes for each data fragment in parallel.
+The `CREATE INDEX` command builds an index on one or more columns of a Lance table. Indexing can improve the performance of queries that filter on the indexed columns. For `btree` and `fts` indexes, the operation is performed in a distributed manner, building indexes for each data fragment in parallel. For `bitmap` indexes, the index is built on the entire dataset at once.
 
 ## Basic Usage
 
@@ -22,10 +22,11 @@ The command uses the `ALTER TABLE` syntax to add an index.
 
 The following index methods are supported:
 
-| Method  | Description                                                                 |
-|---------|-----------------------------------------------------------------------------|
-| `btree` | B-tree index for efficient range queries and point lookups on scalar columns. |
-| `fts`   | Full-text search (inverted) index for text search on string columns.        |
+| Method   | Description                                                                 |
+|----------|-----------------------------------------------------------------------------|
+| `btree`  | B-tree index for efficient range queries and point lookups on scalar columns. |
+| `bitmap` | Bitmap index for efficient equality filters on low-cardinality columns.     |
+| `fts`    | Full-text search (inverted) index for text search on string columns.        |
 
 ## Options
 
@@ -86,6 +87,15 @@ Create an index and specify the `zone_size` for the B-tree:
     ALTER TABLE lance.db.users CREATE INDEX idx_id_zoned USING btree (id) WITH (zone_size = 2048);
     ```
 
+### Bitmap Index
+
+Create a bitmap index on a low-cardinality column (e.g., status, category):
+
+=== "SQL"
+    ```sql
+    ALTER TABLE lance.db.orders CREATE INDEX idx_status USING bitmap (status);
+    ```
+
 ### Full-Text Search Index
 
 Create an FTS index on a text column:
@@ -121,13 +131,22 @@ Consider creating an index when:
 
 ## How It Works
 
-The `CREATE INDEX` command operates as follows:
+The `CREATE INDEX` command operates differently depending on the index type:
+
+### BTree and FTS (Distributed)
 
 1.  **Distributed Index Building**: For each fragment in the Lance dataset, a separate task is launched to build an index on the specified column(s).
 2.  **Metadata Merging**: Once all per-fragment indexes are built, their metadata is collected and merged.
 3.  **Transactional Commit**: A new table version is committed with the new index information. The operation is atomic and ensures that concurrent reads are not affected.
 
+### Bitmap (Whole-Dataset)
+
+Bitmap indexes do not support per-fragment training. Instead, the index is built on the entire dataset at once:
+
+1.  **Index Creation**: A single `createIndex` call builds the bitmap index over all data in the dataset.
+2.  **Atomic Commit**: The index creation and commit are handled atomically by lance-core, including replacement of any existing index with the same name.
+
 ## Notes and Limitations
 
-- **Index Methods**: The `btree` and `fts` methods are supported for scalar index creation.
+- **Index Methods**: The `btree`, `bitmap`, and `fts` methods are supported for scalar index creation.
 - **Index Replacement**: If you create an index with the same name as an existing one, the old index will be replaced by the new one. This is because the underlying implementation uses `replace(true)`.

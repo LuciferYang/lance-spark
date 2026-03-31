@@ -355,6 +355,73 @@ public abstract class BaseAddIndexTest {
     checkIndex("test_fts_repeat");
   }
 
+  @Test
+  public void testCreateBitmapIndex() {
+    prepareDataset();
+
+    Dataset<Row> result =
+        spark.sql(
+            String.format("alter table %s create index test_bitmap using bitmap (id)", fullTable));
+
+    Assertions.assertEquals(
+        "StructType(StructField(fragments_indexed,LongType,true),StructField(index_name,StringType,true))",
+        result.schema().toString());
+
+    Row row = result.collectAsList().get(0);
+    long fragmentsIndexed = row.getLong(0);
+    String indexName = row.getString(1);
+
+    Assertions.assertTrue(fragmentsIndexed >= 2, "Expected at least 2 fragments to be indexed");
+    Assertions.assertEquals("test_bitmap", indexName);
+
+    // Verify query using the indexed field
+    Dataset<Row> query = spark.sql(String.format("select * from %s where id=5", fullTable));
+    Assertions.assertEquals(1L, query.count());
+    Row r = query.collectAsList().get(0);
+    Assertions.assertEquals(5, r.getInt(0));
+    Assertions.assertEquals("text_5", r.getString(1));
+
+    // Check index is created successfully
+    checkIndex("test_bitmap");
+  }
+
+  @Test
+  public void testRepeatedCreateBitmapIndex() {
+    prepareDataset();
+
+    Dataset<Row> result1 =
+        spark.sql(
+            String.format(
+                "alter table %s create index test_bitmap_repeat using bitmap (id)", fullTable));
+    Assertions.assertEquals(
+        "StructType(StructField(fragments_indexed,LongType,true),StructField(index_name,StringType,true))",
+        result1.schema().toString());
+    Row row1 = result1.collectAsList().get(0);
+    long fragmentsIndexed1 = row1.getLong(0);
+    String indexName1 = row1.getString(1);
+    Assertions.assertTrue(fragmentsIndexed1 >= 2, "Expected at least 2 fragments to be indexed");
+    Assertions.assertEquals("test_bitmap_repeat", indexName1);
+
+    // Check index is created successfully
+    checkIndex("test_bitmap_repeat");
+
+    Dataset<Row> result2 =
+        spark.sql(
+            String.format(
+                "alter table %s create index test_bitmap_repeat using bitmap (id)", fullTable));
+    Assertions.assertEquals(
+        "StructType(StructField(fragments_indexed,LongType,true),StructField(index_name,StringType,true))",
+        result2.schema().toString());
+    Row row2 = result2.collectAsList().get(0);
+    long fragmentsIndexed2 = row2.getLong(0);
+    String indexName2 = row2.getString(1);
+    Assertions.assertTrue(fragmentsIndexed2 >= 2, "Expected at least 2 fragments to be indexed");
+    Assertions.assertEquals("test_bitmap_repeat", indexName2);
+
+    // Check index still exists after replacement
+    checkIndex("test_bitmap_repeat");
+  }
+
   private void checkIndex(String indexName) {
     // Check index is created successfully
     org.lance.Dataset lanceDataset = org.lance.Dataset.open().uri(tableDir).build();

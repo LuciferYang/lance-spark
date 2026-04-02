@@ -27,7 +27,7 @@ import org.lance.spark.{LanceDataset, LanceRuntime, LanceSparkReadOptions}
  * Removes the named index from the dataset manifest via lance-core's dropIndex API.
  * Physical index files are not deleted; they are cleaned up by VACUUM.
  */
-case class DropIndexExec(
+case class LanceDropIndexExec(
     catalog: TableCatalog,
     ident: Identifier,
     indexName: String) extends LeafV2CommandExec {

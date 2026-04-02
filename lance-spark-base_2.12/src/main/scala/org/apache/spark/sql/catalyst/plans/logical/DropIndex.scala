@@ -17,27 +17,30 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 /**
- * DropIndex logical plan representing dropping an index from a Lance dataset.
+ * LanceDropIndex logical plan representing dropping an index from a Lance dataset.
+ *
+ * Named LanceDropIndex (not DropIndex) to avoid classpath collision with
+ * Spark's built-in org.apache.spark.sql.catalyst.plans.logical.DropIndex.
  */
-case class DropIndex(
+case class LanceDropIndex(
     table: LogicalPlan,
     indexName: String) extends Command {
 
   override def children: Seq[LogicalPlan] = Seq(table)
 
-  override def output: Seq[Attribute] = DropIndexOutputType.SCHEMA
+  override def output: Seq[Attribute] = LanceDropIndexOutputType.SCHEMA
 
   override def simpleString(maxFields: Int): String = {
-    s"DropIndex(${indexName})"
+    s"LanceDropIndex(${indexName})"
   }
 
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[LogicalPlan])
-      : DropIndex = {
+      : LanceDropIndex = {
     copy(newChildren(0), this.indexName)
   }
 }
 
-object DropIndexOutputType {
+object LanceDropIndexOutputType {
   val SCHEMA: Seq[Attribute] = StructType(
     Array(
       StructField("index_name", DataTypes.StringType, nullable = true),

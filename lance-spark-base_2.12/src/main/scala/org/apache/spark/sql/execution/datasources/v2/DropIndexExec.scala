@@ -15,7 +15,7 @@ package org.apache.spark.sql.execution.datasources.v2
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow}
-import org.apache.spark.sql.catalyst.plans.logical.DropIndexOutputType
+import org.apache.spark.sql.catalyst.plans.logical.LanceDropIndexOutputType
 import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.apache.spark.unsafe.types.UTF8String
 import org.lance.Dataset
@@ -32,7 +32,7 @@ case class DropIndexExec(
     ident: Identifier,
     indexName: String) extends LeafV2CommandExec {
 
-  override def output: Seq[Attribute] = DropIndexOutputType.SCHEMA
+  override def output: Seq[Attribute] = LanceDropIndexOutputType.SCHEMA
 
   override protected def run(): Seq[InternalRow] = {
     val lanceDataset = catalog.loadTable(ident) match {

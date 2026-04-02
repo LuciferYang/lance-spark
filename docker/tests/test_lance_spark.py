@@ -460,7 +460,7 @@ class TestDDLIndex:
         indexes_before = spark.sql("""
             SHOW INDEXES IN default.test_table
         """).collect()
-        index_names_before = {row["index_name"] for row in indexes_before}
+        index_names_before = {row["name"] for row in indexes_before}
         assert "idx_id" in index_names_before
 
         # Drop the index
@@ -476,7 +476,7 @@ class TestDDLIndex:
         indexes_after = spark.sql("""
             SHOW INDEXES IN default.test_table
         """).collect()
-        index_names_after = {row["index_name"] for row in indexes_after}
+        index_names_after = {row["name"] for row in indexes_after}
         assert "idx_id" not in index_names_after
 
     def test_drop_index_then_recreate(self, spark):
@@ -510,7 +510,7 @@ class TestDDLIndex:
         indexes = spark.sql("""
             SHOW INDEXES IN default.test_table
         """).collect()
-        index_names = {row["index_name"] for row in indexes}
+        index_names = {row["name"] for row in indexes}
         assert "idx_id" in index_names
 
         # Verify queries still work

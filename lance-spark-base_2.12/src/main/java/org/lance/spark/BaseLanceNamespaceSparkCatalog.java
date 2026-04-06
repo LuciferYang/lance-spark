@@ -385,8 +385,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
     try {
       this.namespace.namespaceExists(request);
       return true;
-    } catch (Exception e) {
-      return false;
+    } catch (LanceNamespaceException e) {
+      if (e.getErrorCode() == ErrorCode.NAMESPACE_NOT_FOUND) {
+        return false;
+      }
+      throw e;
     }
   }
 
@@ -407,8 +410,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
 
       Map<String, String> properties = response.getProperties();
       return properties != null ? properties : Collections.emptyMap();
-    } catch (Exception e) {
-      throw new NoSuchNamespaceException(namespace);
+    } catch (LanceNamespaceException e) {
+      if (e.getErrorCode() == ErrorCode.NAMESPACE_NOT_FOUND) {
+        throw new NoSuchNamespaceException(namespace);
+      }
+      throw e;
     }
   }
 
@@ -429,11 +435,8 @@ public abstract class BaseLanceNamespaceSparkCatalog
 
     try {
       this.namespace.createNamespace(request);
-    } catch (Exception e) {
-      if (e.getMessage() != null && e.getMessage().contains("already exists")) {
-        throw new NamespaceAlreadyExistsException(namespace);
-      }
-      throw new RuntimeException("Failed to create namespace", e);
+    } catch (org.lance.namespace.errors.NamespaceAlreadyExistsException e) {
+      throw new NamespaceAlreadyExistsException(namespace);
     }
   }
 
@@ -514,8 +517,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
     try {
       this.namespace.tableExists(request);
       return true;
-    } catch (Exception e) {
-      return false;
+    } catch (LanceNamespaceException e) {
+      if (e.getErrorCode() == ErrorCode.TABLE_NOT_FOUND) {
+        return false;
+      }
+      throw e;
     }
   }
 
@@ -677,8 +683,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       namespace.deregisterTable(deregisterRequest);
 
       return true;
-    } catch (Exception e) {
-      return false;
+    } catch (LanceNamespaceException e) {
+      if (e.getErrorCode() == ErrorCode.TABLE_NOT_FOUND) {
+        return false;
+      }
+      throw e;
     }
   }
 
@@ -711,8 +720,11 @@ public abstract class BaseLanceNamespaceSparkCatalog
       namespace.dropTable(dropRequest);
 
       return true;
-    } catch (Exception e) {
-      return false;
+    } catch (LanceNamespaceException e) {
+      if (e.getErrorCode() == ErrorCode.TABLE_NOT_FOUND) {
+        return false;
+      }
+      throw e;
     }
   }
 
@@ -833,25 +845,31 @@ public abstract class BaseLanceNamespaceSparkCatalog
 
     Schema arrowSchema = LanceArrowUtils.toArrowSchema(processedSchema, "UTC", true);
     Dataset ds = openDataset(readOptions);
-    Map<String, String> merged =
-        LanceRuntime.mergeStorageOptions(catalogConfig.getStorageOptions(), initialStorageOptions);
-    StagedCommit stagedCommit =
-        StagedCommit.forExistingTable(
-            ds, arrowSchema, merged, namespace, tableIdList, managedVersioning);
-    // Use specified file format version, or fall back to existing table's version
-    String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
-    if (fileFormatVersion == null) {
-      fileFormatVersion = ds.getLanceFileFormatVersion();
+    try {
+      Map<String, String> merged =
+          LanceRuntime.mergeStorageOptions(
+              catalogConfig.getStorageOptions(), initialStorageOptions);
+      StagedCommit stagedCommit =
+          StagedCommit.forExistingTable(
+              ds, arrowSchema, merged, namespace, tableIdList, managedVersioning);
+      // Use specified file format version, or fall back to existing table's version
+      String fileFormatVersion = catalogConfig.getFileFormatVersion(properties);
+      if (fileFormatVersion == null) {
+        fileFormatVersion = ds.getLanceFileFormatVersion();
+      }
+      return createStagedDataset(
+          readOptions,
+          processedSchema,
+          initialStorageOptions,
+          namespaceImpl,
+          namespaceProperties,
+          managedVersioning,
+          stagedCommit,
+          fileFormatVersion);
+    } catch (Exception e) {
+      ds.close();
+      throw e;
     }
-    return createStagedDataset(
-        readOptions,
-        processedSchema,
-        initialStorageOptions,
-        namespaceImpl,
-        namespaceProperties,
-        managedVersioning,
-        stagedCommit,
-        fileFormatVersion);
   }
 
   /** Stage replace a table at a direct path. */
@@ -868,7 +886,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
     Dataset ds;
     try {
       ds = openDataset(readOptions);
-    } catch (Exception e) {
+    } catch (IllegalArgumentException e) {
       throw new NoSuchTableException(ident);
     }
 
@@ -943,11 +961,16 @@ public abstract class BaseLanceNamespaceSparkCatalog
         LanceRuntime.mergeStorageOptions(catalogConfig.getStorageOptions(), initialStorageOptions);
     if (exists) {
       Dataset ds = openDataset(readOptions);
-      stagedCommit =
-          StagedCommit.forExistingTable(
-              ds, arrowSchema, merged, namespace, tableIdList, managedVersioning);
-      if (fileFormatVersion == null) {
-        fileFormatVersion = ds.getLanceFileFormatVersion();
+      try {
+        stagedCommit =
+            StagedCommit.forExistingTable(
+                ds, arrowSchema, merged, namespace, tableIdList, managedVersioning);
+        if (fileFormatVersion == null) {
+          fileFormatVersion = ds.getLanceFileFormatVersion();
+        }
+      } catch (Exception e) {
+        ds.close();
+        throw e;
       }
     } else {
       stagedCommit =
@@ -983,11 +1006,16 @@ public abstract class BaseLanceNamespaceSparkCatalog
 
     if (exists) {
       Dataset ds = openDataset(readOptions);
-      stagedCommit =
-          StagedCommit.forExistingTable(
-              ds, arrowSchema, catalogConfig.getStorageOptions(), null, null, false);
-      if (fileFormatVersion == null) {
-        fileFormatVersion = ds.getLanceFileFormatVersion();
+      try {
+        stagedCommit =
+            StagedCommit.forExistingTable(
+                ds, arrowSchema, catalogConfig.getStorageOptions(), null, null, false);
+        if (fileFormatVersion == null) {
+          fileFormatVersion = ds.getLanceFileFormatVersion();
+        }
+      } catch (Exception e) {
+        ds.close();
+        throw e;
       }
     } else {
       stagedCommit =
@@ -1055,7 +1083,7 @@ public abstract class BaseLanceNamespaceSparkCatalog
           new org.lance.namespace.model.ListNamespacesRequest();
       namespace.listNamespaces(request);
       return false;
-    } catch (Exception e) {
+    } catch (LanceNamespaceException e) {
       logger.info(
           "REST namespace ListNamespaces failed, "
               + "falling back to flat table structure with single_level_ns=true");

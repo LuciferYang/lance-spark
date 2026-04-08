@@ -23,7 +23,9 @@ import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.LanceSparkWriteOptions;
 
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 public class Utils {
 
@@ -86,6 +88,92 @@ public class Utils {
           writeOptions.getNamespace(), writeOptions.getTableId(), writeOptions.toReadOptions());
     }
     return openDataset(writeOptions.getDatasetUri(), writeOptions.toReadOptions());
+  }
+
+  /** Returns a new builder for opens that need storage-option merging or a specific session. */
+  public static OpenDatasetBuilder openDatasetBuilder() {
+    return new OpenDatasetBuilder();
+  }
+
+  /**
+   * Builder for dataset opens that merge driver-side {@code initialStorageOptions} into the base
+   * storage options and attach a managed {@link LanceRuntime} session.
+   *
+   * <p>Prefer {@link #readOptions(LanceSparkReadOptions)} or {@link
+   * #writeOptions(LanceSparkWriteOptions)} to populate fields from existing option objects; use the
+   * individual setters only when those are not available.
+   */
+  public static class OpenDatasetBuilder {
+    private String uri;
+    private Map<String, String> storageOptions;
+    private Map<String, String> initialStorageOptions;
+    private String catalogName;
+    private Long version;
+
+    private OpenDatasetBuilder() {}
+
+    public OpenDatasetBuilder uri(String uri) {
+      this.uri = uri;
+      return this;
+    }
+
+    public OpenDatasetBuilder storageOptions(Map<String, String> storageOptions) {
+      this.storageOptions = storageOptions;
+      return this;
+    }
+
+    /** Populates URI, storage options, version, and catalog name from the read options. */
+    public OpenDatasetBuilder readOptions(LanceSparkReadOptions readOptions) {
+      this.uri = readOptions.getDatasetUri();
+      this.storageOptions = readOptions.getStorageOptions();
+      this.version = readOptions.getVersion() != null ? readOptions.getVersion().longValue() : null;
+      this.catalogName = readOptions.getCatalogName();
+      return this;
+    }
+
+    /** Populates URI and storage options from the write options. */
+    public OpenDatasetBuilder writeOptions(LanceSparkWriteOptions writeOptions) {
+      this.uri = writeOptions.getDatasetUri();
+      this.storageOptions = writeOptions.getStorageOptions();
+      return this;
+    }
+
+    /** Sets initial storage options obtained from {@code describeTable()} on the driver. */
+    public OpenDatasetBuilder initialStorageOptions(Map<String, String> initialStorageOptions) {
+      this.initialStorageOptions = initialStorageOptions;
+      return this;
+    }
+
+    /** Sets the catalog name used to pick an isolated {@link LanceRuntime} session. */
+    public OpenDatasetBuilder catalogName(String catalogName) {
+      this.catalogName = catalogName;
+      return this;
+    }
+
+    public OpenDatasetBuilder version(Long version) {
+      this.version = version;
+      return this;
+    }
+
+    public Dataset build() {
+      Map<String, String> base = storageOptions != null ? storageOptions : Collections.emptyMap();
+      Map<String, String> merged = LanceRuntime.mergeStorageOptions(base, initialStorageOptions);
+
+      ReadOptions.Builder roBuilder =
+          new ReadOptions.Builder()
+              .setStorageOptions(merged)
+              .setSession(
+                  catalogName != null ? LanceRuntime.session(catalogName) : LanceRuntime.session());
+      if (version != null) {
+        roBuilder.setVersion(version);
+      }
+
+      return Dataset.open()
+          .allocator(LanceRuntime.allocator())
+          .uri(uri)
+          .readOptions(roBuilder.build())
+          .build();
+    }
   }
 
   /**

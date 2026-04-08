@@ -17,9 +17,9 @@ import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.ManifestSummary;
 import org.lance.ipc.ColumnOrdering;
-import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.utils.Optional;
+import org.lance.spark.utils.Utils;
 
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
@@ -97,22 +97,7 @@ public class LanceScanBuilder
    */
   private Dataset getOrOpenDataset() {
     if (lazyDataset == null) {
-      if (readOptions.hasNamespace()) {
-        lazyDataset =
-            Dataset.open()
-                .allocator(LanceRuntime.allocator())
-                .namespaceClient(readOptions.getNamespace())
-                .tableId(readOptions.getTableId())
-                .readOptions(readOptions.toReadOptions())
-                .build();
-      } else {
-        lazyDataset =
-            Dataset.open()
-                .allocator(LanceRuntime.allocator())
-                .uri(readOptions.getDatasetUri())
-                .readOptions(readOptions.toReadOptions())
-                .build();
-      }
+      lazyDataset = Utils.openDataset(readOptions);
     }
     return lazyDataset;
   }

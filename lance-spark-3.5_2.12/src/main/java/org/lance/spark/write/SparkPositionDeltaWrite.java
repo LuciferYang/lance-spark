@@ -17,7 +17,6 @@ import org.lance.CommitBuilder;
 import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.FragmentMetadata;
-import org.lance.ReadOptions;
 import org.lance.RowAddress;
 import org.lance.Transaction;
 import org.lance.WriteParams;
@@ -203,7 +202,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
       boolean useQueuedBuffer = writeOptions.isUseQueuedWriteBuffer();
 
       // Merge initial storage options with write options
-      WriteParams params = buildWriteParams();
+      WriteParams params = writeOptions.toWriteParams(initialStorageOptions);
 
       // Select buffer type based on configuration
       ArrowBatchWriteBuffer writeBuffer;
@@ -232,28 +231,6 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
           writeOptions,
           new LanceDataWriter(writeBuffer, fragmentCreationTask, fragmentCreationThread),
           initialStorageOptions);
-    }
-
-    private WriteParams buildWriteParams() {
-      Map<String, String> merged =
-          LanceRuntime.mergeStorageOptions(writeOptions.getStorageOptions(), initialStorageOptions);
-
-      WriteParams.Builder builder = new WriteParams.Builder();
-      builder.withMode(writeOptions.getWriteMode());
-      if (writeOptions.getMaxRowsPerFile() != null) {
-        builder.withMaxRowsPerFile(writeOptions.getMaxRowsPerFile());
-      }
-      if (writeOptions.getMaxRowsPerGroup() != null) {
-        builder.withMaxRowsPerGroup(writeOptions.getMaxRowsPerGroup());
-      }
-      if (writeOptions.getMaxBytesPerFile() != null) {
-        builder.withMaxBytesPerFile(writeOptions.getMaxBytesPerFile());
-      }
-      if (writeOptions.getFileFormatVersion() != null) {
-        builder.withDataStorageVersion(writeOptions.getFileFormatVersion());
-      }
-      builder.withStorageOptions(merged);
-      return builder.build();
     }
   }
 
@@ -335,17 +312,9 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
 
     private Dataset openDataset(LanceSparkWriteOptions options) {
       // Note: options.hasNamespace() is false on workers (namespace is transient)
-      Map<String, String> merged =
-          LanceRuntime.mergeStorageOptions(options.getStorageOptions(), initialStorageOptions);
-      ReadOptions readOptions =
-          new ReadOptions.Builder()
-              .setStorageOptions(merged)
-              .setSession(LanceRuntime.session())
-              .build();
-      return Dataset.open()
-          .allocator(LanceRuntime.allocator())
-          .uri(options.getDatasetUri())
-          .readOptions(readOptions)
+      return Utils.openDatasetBuilder()
+          .writeOptions(options)
+          .initialStorageOptions(initialStorageOptions)
           .build();
     }
 

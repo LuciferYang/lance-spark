@@ -20,6 +20,7 @@ import org.apache.spark.sql.connector.catalog.{Identifier, TableCatalog}
 import org.lance.Dataset
 import org.lance.cleanup.CleanupPolicy
 import org.lance.spark.{LanceDataset, LanceRuntime, LanceSparkReadOptions}
+import org.lance.spark.utils.Utils
 
 import scala.collection.JavaConverters._
 
@@ -58,7 +59,7 @@ case class VacuumExec(
     val readOptions = lanceDataset.readOptions()
 
     val stats = {
-      val dataset = openDataset(readOptions)
+      val dataset = Utils.openDataset(readOptions)
       try {
         dataset.cleanupWithPolicy(policy)
       } finally {
@@ -67,22 +68,5 @@ case class VacuumExec(
     }
 
     Seq(new GenericInternalRow(Array[Any](stats.getBytesRemoved, stats.getOldVersions)))
-  }
-
-  private def openDataset(readOptions: LanceSparkReadOptions): Dataset = {
-    if (readOptions.hasNamespace) {
-      Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .namespaceClient(readOptions.getNamespace)
-        .readOptions(readOptions.toReadOptions())
-        .tableId(readOptions.getTableId)
-        .build()
-    } else {
-      Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .uri(readOptions.getDatasetUri)
-        .readOptions(readOptions.toReadOptions())
-        .build()
-    }
   }
 }

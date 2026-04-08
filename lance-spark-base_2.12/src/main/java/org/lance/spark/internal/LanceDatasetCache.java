@@ -15,9 +15,9 @@ package org.lance.spark.internal;
 
 import org.lance.Dataset;
 import org.lance.Fragment;
-import org.lance.ReadOptions;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
+import org.lance.spark.utils.Utils;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -261,21 +261,12 @@ public class LanceDatasetCache {
   }
 
   private static Dataset openDataset(DatasetCacheKey key) {
-    Map<String, String> merged =
-        LanceRuntime.mergeStorageOptions(key.getStorageOptions(), key.getInitialStorageOptions());
-
-    ReadOptions.Builder builder =
-        new ReadOptions.Builder()
-            .setStorageOptions(merged)
-            .setSession(LanceRuntime.session(key.getCatalogName()));
-    if (key.getVersion() != null) {
-      builder.setVersion(key.getVersion());
-    }
-
-    return Dataset.open()
-        .allocator(LanceRuntime.allocator())
+    return Utils.openDatasetBuilder()
         .uri(key.getUri())
-        .readOptions(builder.build())
+        .storageOptions(key.getStorageOptions())
+        .initialStorageOptions(key.getInitialStorageOptions())
+        .catalogName(key.getCatalogName())
+        .version(key.getVersion() != null ? key.getVersion().intValue() : null)
         .build();
   }
 

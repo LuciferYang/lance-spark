@@ -235,6 +235,17 @@ public class LanceSparkWriteOptions implements Serializable {
    * @return WriteParams for the Lance native library
    */
   public WriteParams toWriteParams() {
+    return toWriteParams(null);
+  }
+
+  /**
+   * Converts this to Lance WriteParams for the native library, merging in initial storage options.
+   *
+   * @param initialStorageOptions initial storage options from describeTable on the driver (can be
+   *     null)
+   * @return WriteParams for the Lance native library
+   */
+  public WriteParams toWriteParams(Map<String, String> initialStorageOptions) {
     WriteParams.Builder builder = new WriteParams.Builder();
     builder.withMode(writeMode);
     if (maxRowsPerFile != null) {
@@ -252,8 +263,10 @@ public class LanceSparkWriteOptions implements Serializable {
     if (enableStableRowIds != null) {
       builder.withEnableStableRowIds(enableStableRowIds);
     }
-    if (!storageOptions.isEmpty()) {
-      builder.withStorageOptions(storageOptions);
+    Map<String, String> merged =
+        LanceRuntime.mergeStorageOptions(storageOptions, initialStorageOptions);
+    if (!merged.isEmpty()) {
+      builder.withStorageOptions(merged);
     }
     return builder.build();
   }

@@ -21,6 +21,7 @@ import org.apache.spark.sql.util.LanceSerializeUtil.{decode, encode}
 import org.lance.{Dataset, ReadOptions}
 import org.lance.compaction.{Compaction, CompactionOptions, CompactionTask, RewriteResult}
 import org.lance.spark.{BaseLanceNamespaceSparkCatalog, LanceDataset, LanceRuntime, LanceSparkReadOptions}
+import org.lance.spark.utils.Utils
 
 import scala.collection.JavaConverters._
 
@@ -83,7 +84,10 @@ case class OptimizeExec(
 
     // Plan compaction tasks
     val tasks = {
-      val dataset = openDataset(readOptions, nsImpl, nsProps, tableId, initialStorageOpts)
+      val dataset = Utils.openDatasetBuilder()
+        .readOptions(readOptions)
+        .initialStorageOptions(initialStorageOpts.map(_.asJava).orNull)
+        .build()
       try {
         Compaction.planCompaction(dataset, options).getCompactionTasks
       } finally {
@@ -109,7 +113,10 @@ case class OptimizeExec(
 
     // Commit compaction results
     val metrics = {
-      val dataset = openDataset(readOptions, nsImpl, nsProps, tableId, initialStorageOpts)
+      val dataset = Utils.openDatasetBuilder()
+        .readOptions(readOptions)
+        .initialStorageOptions(initialStorageOpts.map(_.asJava).orNull)
+        .build()
       try {
         Compaction.commitCompaction(dataset, result, options)
       } finally {
@@ -123,26 +130,6 @@ case class OptimizeExec(
         metrics.getFragmentsAdded,
         metrics.getFilesRemoved,
         metrics.getFilesAdded)))
-  }
-
-  private def openDataset(
-      readOptions: LanceSparkReadOptions,
-      nsImpl: Option[String],
-      nsProps: Option[Map[String, String]],
-      tableId: Option[List[String]],
-      initialStorageOpts: Option[Map[String, String]]): Dataset = {
-    // Build ReadOptions with merged storage options
-    val merged = LanceRuntime.mergeStorageOptions(
-      readOptions.getStorageOptions,
-      initialStorageOpts.map(_.asJava).orNull)
-
-    val builder = new ReadOptions.Builder().setStorageOptions(merged)
-
-    Dataset.open()
-      .allocator(LanceRuntime.allocator())
-      .uri(readOptions.getDatasetUri)
-      .readOptions(builder.build())
-      .build()
   }
 }
 
@@ -158,17 +145,9 @@ case class OptimizeTaskExecutor(
     val readOptions = decode[LanceSparkReadOptions](lanceConf)
     val compactionTask = decode[CompactionTask](task)
 
-    // Build ReadOptions with merged storage options
-    val merged = LanceRuntime.mergeStorageOptions(
-      readOptions.getStorageOptions,
-      initialStorageOptions.map(_.asJava).orNull)
-
-    val builder = new ReadOptions.Builder().setStorageOptions(merged)
-
-    val dataset = Dataset.open()
-      .allocator(LanceRuntime.allocator())
-      .uri(readOptions.getDatasetUri)
-      .readOptions(builder.build())
+    val dataset = Utils.openDatasetBuilder()
+      .readOptions(readOptions)
+      .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
       .build()
 
     try {

@@ -21,19 +21,15 @@ import java.util.Optional;
  * Static map from Spark V2 op names (as returned by {@link
  * org.apache.spark.sql.connector.expressions.GeneralScalarExpression#name()} and {@link
  * org.apache.spark.sql.connector.expressions.filter.Predicate#name()}) to bare Substrait function
- * names plus the standard extension URI the function lives in.
+ * names and the standard extension URI each function lives in.
  *
- * <p>Function names are intentionally bare (e.g. {@code "equal"}) rather than signature-mangled
- * (e.g. {@code "equal:any_any"}) — Lance's {@code datafusion-substrait} consumer accepts the bare
- * form, verified against the test fixtures in {@code lance-mine/rust/lance-datafusion/src/
- * substrait.rs:881}.
+ * <p>Function names are bare (e.g. {@code "equal"}), not signature-mangled (e.g. {@code
+ * "equal:any_any"}) — Lance's {@code datafusion-substrait} consumer accepts the bare form.
  *
- * <p>The boolean operators {@code AND}, {@code OR}, {@code NOT} are <em>not</em> in this map; they
- * are special-cased structurally by {@link PredicateEncoder} (which still calls {@link
- * SubstraitContext#registerFunction} so the {@code functions_boolean.yaml} URI ends up in the
- * envelope). The same applies to {@code IN} (synthesized as OR-of-equals), {@code CAST} (top- level
- * expression class), and the constant predicates {@code ALWAYS_TRUE}, {@code ALWAYS_FALSE}, {@code
- * BOOLEAN_EXPRESSION}.
+ * <p>Not in this map: {@code AND} / {@code OR} / {@code NOT} are special-cased structurally by
+ * {@link PredicateEncoder}; {@code IN} is synthesized as OR-of-equals; {@code CAST} is a top-level
+ * expression class; {@code ALWAYS_TRUE} / {@code ALWAYS_FALSE} / {@code BOOLEAN_EXPRESSION} are
+ * constant predicates handled directly.
  */
 public final class FunctionNames {
 

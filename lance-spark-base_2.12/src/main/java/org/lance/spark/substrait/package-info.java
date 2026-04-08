@@ -15,32 +15,28 @@
 /**
  * Substrait protobuf encoders for Lance scan pushdown.
  *
- * <p>This package translates Spark V2 connector expressions into the Substrait protobuf format that
- * Lance's scanner consumes via {@code ScanOptions.substraitFilter} and {@code
- * ScanOptions.substraitAggregate}. The encoders are intentionally narrow:
+ * <p>Translates Spark V2 connector expressions into the protobuf format Lance's scanner consumes
+ * via {@code ScanOptions.substraitFilter} and {@code ScanOptions.substraitAggregate}:
  *
  * <ul>
  *   <li>{@link org.lance.spark.substrait.SubstraitContext} — per-encode mutable state: dataset
- *       schema binding, function/URI anchor registries.
- *   <li>{@link org.lance.spark.substrait.FunctionNames} — static map from Spark V2 op names to bare
- *       Substrait function names (e.g. {@code "="} → {@code "equal"}).
+ *       schema binding, URI + function anchor registries.
  *   <li>{@link org.lance.spark.substrait.TypeEncoder} — Spark {@code DataType} → Substrait {@code
- *       Type}, including dataset-schema {@code NamedStruct} construction.
- *   <li>{@link org.lance.spark.substrait.LiteralEncoder} — Spark {@code Literal&lt;?&gt;} →
+ *       Type}, plus whole-dataset {@code NamedStruct} construction.
+ *   <li>{@link org.lance.spark.substrait.LiteralEncoder} — Spark V2 {@code Literal&lt;?&gt;} →
  *       Substrait {@code Expression.Literal}.
- *   <li>{@link org.lance.spark.substrait.PredicateEncoder} — Spark V2 {@code Predicate} → Substrait
- *       {@code ExtendedExpression}. Built on top of the four classes above. (Phase 1.)
- *   <li>{@link org.lance.spark.substrait.AggregateEncoder} — Spark V2 aggregate functions →
- *       Substrait {@code Plan} containing an {@code AggregateRel}. (Phase 2.)
+ *   <li>{@link org.lance.spark.substrait.FunctionNames} — static map from Spark V2 op names to bare
+ *       Substrait function names and their extension URIs.
+ *   <li>{@link org.lance.spark.substrait.PredicateEncoder} / {@link
+ *       org.lance.spark.substrait.AggregateEncoder} — Phase 1 / Phase 2 markers, implemented in
+ *       follow-up PRs.
  * </ul>
  *
- * <p>Driver-side only. {@link org.lance.spark.substrait.SubstraitContext} is mutable and per-
- * encode; encoded bytes are serialized into {@code LanceInputPartition} and shipped to workers as
- * {@code byte[]}. Workers never instantiate the encoder.
+ * <p>Driver-side only. {@link org.lance.spark.substrait.SubstraitContext} is mutable and lives for
+ * a single encode; encoded bytes are shipped to workers via {@code LanceInputPartition}.
  *
- * <p>Production deployments use the {@code lance-spark-bundle-*} uber-jars, which relocate {@code
- * io.substrait} → {@code org.lance.spark.shaded.substrait} and {@code com.google.protobuf} → {@code
- * org.lance.spark.shaded.protobuf} so that substrait-java's bundled protobuf does not collide with
- * whatever protobuf version Spark itself ships at runtime.
+ * <p>The published {@code lance-spark-bundle-*} uber-jars relocate {@code io.substrait} and {@code
+ * com.google.protobuf} under {@code org.lance.spark.shaded.*}, so substrait-java's bundled protobuf
+ * cannot collide with the version Spark ships at runtime.
  */
 package org.lance.spark.substrait;

@@ -40,33 +40,23 @@ import java.math.BigInteger;
 /**
  * Translates Spark V2 connector {@link Literal} into Substrait {@link Expression.Literal}.
  *
- * <p>Critical: {@link Literal#value()} is in <em>Spark InternalRow encoding</em>, not the user-
- * friendly form. The encoder must unwrap accordingly:
+ * <p>{@link Literal#value()} is in Spark InternalRow encoding, so the unwrap rules are:
  *
- * <table>
- *   <caption>Spark literal value JVM types</caption>
- *   <tr><th>Spark {@code DataType}</th><th>{@code lit.value()} JVM type</th></tr>
- *   <tr><td>{@code BooleanType}</td><td>{@code Boolean}</td></tr>
- *   <tr><td>{@code ByteType}/{@code ShortType}/{@code IntegerType}</td>
- *       <td>{@code Byte}/{@code Short}/{@code Integer}</td></tr>
- *   <tr><td>{@code LongType}</td><td>{@code Long}</td></tr>
- *   <tr><td>{@code FloatType}/{@code DoubleType}</td><td>{@code Float}/{@code Double}</td></tr>
- *   <tr><td>{@code StringType}</td>
- *       <td>{@code org.apache.spark.unsafe.types.UTF8String} (NOT {@code String})</td></tr>
- *   <tr><td>{@code BinaryType}</td><td>{@code byte[]}</td></tr>
- *   <tr><td>{@code DateType}</td><td>{@code Integer} (days since 1970-01-01)</td></tr>
- *   <tr><td>{@code TimestampType}/{@code TimestampNTZType}</td>
- *       <td>{@code Long} (microseconds since 1970-01-01)</td></tr>
- *   <tr><td>{@code DecimalType(p,s)}</td>
- *       <td>{@code org.apache.spark.sql.types.Decimal} (NOT {@code java.math.BigDecimal})</td></tr>
- * </table>
+ * <ul>
+ *   <li>Primitives (Boolean / Byte / Short / Integer / Long / Float / Double) — boxed Java types
+ *   <li>{@code StringType} → {@link UTF8String}, not {@code java.lang.String}
+ *   <li>{@code BinaryType} → {@code byte[]}
+ *   <li>{@code DateType} → {@code Integer} days since 1970-01-01
+ *   <li>{@code TimestampType} / {@code TimestampNTZType} → {@code Long} microseconds since epoch
+ *   <li>{@code DecimalType(p, s)} → Spark {@link Decimal}, not {@code java.math.BigDecimal}
+ * </ul>
  *
- * <p>Decimal encoding follows Substrait spec: 16-byte little-endian two's-complement representation
- * of the unscaled value, with sign-extension padding.
+ * <p>Decimal output uses Substrait's 16-byte little-endian two's-complement representation of the
+ * unscaled value, sign-extended to a fixed width.
  *
- * <p>This is where the float/double round-trip bug from the legacy SQL-string filter path gets
- * fixed: {@code setFp64(double)} writes the IEEE-754 binary directly. The {@code
- * literalRoundTripsExactBitsForDouble} test pins this against {@code Literal(0.1 + 0.2)}.
+ * <p>Doubles and floats are written via {@code setFp64} / {@code setFp32} directly, so the encoding
+ * is lossless — fixing the precision loss of the legacy {@code Double.toString → reparse}
+ * SQL-string path. A regression test pins this against {@code 0.1 + 0.2}.
  */
 public final class LiteralEncoder {
 

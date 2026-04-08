@@ -70,12 +70,9 @@ class TypeEncoderTest {
     assertEquals(10, t.getDecimal().getScale());
   }
 
-  // NOTE: There is no negative-scale test. Spark's DecimalType constructor itself rejects
-  // negative scale ("Negative scale is not allowed; set
-  // spark.sql.legacy.allowNegativeScaleOfDecimal
-  // to enable"), so our encoder's defensive `scale < 0` check is unreachable in practice. We
-  // keep the check in TypeEncoder.encode anyway as a guard against the legacy config or any
-  // future relaxation.
+  // No negative-scale test: Spark's DecimalType constructor rejects scale < 0 upstream, so
+  // our encoder's defensive check is unreachable in practice. The check stays as a guard
+  // against spark.sql.legacy.allowNegativeScaleOfDecimal.
 
   @Test
   void unsupportedTypesReturnNull() {
@@ -146,8 +143,7 @@ class TypeEncoderTest {
         "expected placeholder name, got: " + ns.getNames(1));
   }
 
-  // Workaround: Spark's NullType is exposed via Scala's object pattern, so we reach for it via
-  // the synthetic NullType$.MODULE$ accessor below. This avoids importing scala.
+  // Spark's NullType is a Scala object; reach it via MODULE$ to avoid importing scala.
   private static final class NullType$ {
     static final NullType MODULE$ = NullType$.module();
 

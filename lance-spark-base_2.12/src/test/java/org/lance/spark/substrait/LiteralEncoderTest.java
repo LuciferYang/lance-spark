@@ -80,11 +80,9 @@ class LiteralEncoderTest {
   }
 
   /**
-   * Regression test for the original SQL-string filter bug: encoding {@code 0.1 + 0.2} via the
-   * legacy {@code Double.toString → reparse} path produced {@code "0.30000000000000004"} which lost
-   * precision when reparsed by some downstream consumers. The Substrait encoder writes the IEEE-754
-   * bits directly, so the encoded literal must round-trip exactly to the original double value at
-   * the bit level.
+   * Regression for the legacy SQL-string filter path: {@code Double.toString → reparse} lost
+   * precision on values like {@code 0.1 + 0.2}. Substrait writes IEEE-754 bits directly, so the
+   * round-trip must be bit-exact.
    */
   @Test
   void literalRoundTripsExactBitsForDouble() {

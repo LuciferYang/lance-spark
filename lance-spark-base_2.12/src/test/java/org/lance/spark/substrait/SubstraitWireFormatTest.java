@@ -60,16 +60,12 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Verifies end-to-end that substrait-java's protobuf output is accepted by Lance's
- * datafusion-substrait consumer and produces correct scan results.
+ * Pins the wire format between substrait-java and Lance's datafusion-substrait consumer.
  *
- * <p>This test exists to catch wire-format drift before it reaches the encoder layer. It
- * deliberately bypasses every abstraction in {@code org.lance.spark.substrait} and builds the
- * {@link ExtendedExpression} protobuf directly. If the test breaks, the entire encoder design needs
- * re-evaluation before any encoder code is shipped.
- *
- * <p>Dataset: a single int32 column "value" with rows 0..9. Filter: {@code value < 5}. Expected:
- * {@code countRows() == 5}.
+ * <p>Deliberately bypasses every abstraction in {@code org.lance.spark.substrait} and hand-builds
+ * an {@link ExtendedExpression} for {@code value < 5} directly from substrait-java's protobuf
+ * builders, so this test catches wire-format drift independently of any encoder code. The dataset
+ * has ten int32 rows 0..9; the filter should match rows 0..4.
  */
 public class SubstraitWireFormatTest {
   @TempDir Path tempDir;

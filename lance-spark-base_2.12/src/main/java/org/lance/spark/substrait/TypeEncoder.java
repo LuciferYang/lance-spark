@@ -36,32 +36,20 @@ import org.apache.spark.sql.types.TimestampType;
 /**
  * Translates Spark {@link DataType} into Substrait {@link Type} protobuf.
  *
- * <p>Two responsibilities:
+ * <p>Two entry points:
  *
  * <ol>
- *   <li>Per-type encoding for primitives, decimal, date/time, binary, and string.
- *   <li>Whole-dataset {@link NamedStruct} construction. The encoded {@code NamedStruct} must have
- *       the same top-level field count as Lance's input schema; columns the encoder cannot
- *       represent (e.g. nested {@code StructType}, {@code ArrayType}, {@code MapType}, UDTs, {@code
- *       NullType}) are emitted as placeholder entries that Lance's {@code remove_extension_types}
- *       consumer drops and remaps around.
+ *   <li>{@link #encode} handles the 13 scalar types (bool, i8/i16/i32/i64, fp32/64, string, binary,
+ *       date, timestamp, timestamp-with-tz, decimal) and returns {@code null} for everything else.
+ *   <li>{@link #encodeDatasetSchema} wraps {@code encode} with placeholder emission so the result
+ *       has exactly one top-level field per input column — Lance's {@code remove_extension_types}
+ *       consumer drops the placeholders and remaps field references around them.
  * </ol>
  *
- * <p>Decimal: Spark precision/scale carry over directly (max precision 38). Negative scale is
- * rejected — DataFusion's substrait consumer does not accept it.
- *
- * <p>Date / Timestamp:
- *
- * <ul>
- *   <li>{@code DateType} → Substrait {@code Date} (int32 days since 1970-01-01)
- *   <li>{@code TimestampType} (session-TZ) → Substrait {@code TimestampTz} (int64 micros UTC)
- *   <li>{@code TimestampNTZType} (Spark 3.4+) → Substrait {@code Timestamp} (int64 micros, no TZ)
- * </ul>
- *
- * <p>Nested types ({@code ArrayType}, {@code MapType}, nested {@code StructType}) and {@code
- * NullType} are intentionally not encoded in this Phase 0 release. Schemas that contain them as
- * top-level columns get placeholder entries; predicates that reference such columns will fail to
- * encode and be returned to Spark for post-scan evaluation.
+ * <p>Notable type mappings: {@code TimestampType} (session-TZ) → {@code TimestampTz} (int64 UTC
+ * micros); {@code TimestampNTZType} → {@code Timestamp} (int64 local micros); {@code DateType} →
+ * {@code Date} (int32 days since epoch); {@code DecimalType(p,s)} → {@code Decimal(p,s)}, with
+ * negative scale rejected because DataFusion's consumer doesn't accept it.
  */
 public final class TypeEncoder {
 

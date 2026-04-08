@@ -193,31 +193,28 @@
                 <artifactId>arrow-dataset</artifactId>
                 <version>${arrow.version}</version>
             </dependency>
-            <!-- Substrait Java for filter / aggregate pushdown encoding.
-                 substrait-java 0.84.1 was compiled against protobuf-java 3.25.8 and calls APIs
-                 (e.g. LazyStringArrayList.emptyList()) that do not exist in older protobuf-java
-                 releases. Spark 3.4/3.5 ship protobuf-java 3.19.6 and Spark 4.0/4.1 ship 4.x;
-                 neither matches substrait-java's pin. We must therefore bundle substrait-java's
-                 own protobuf at production time via shade+relocate in the lance-spark-bundle-*
-                 modules, and at test time we override Spark's provided protobuf by declaring
-                 protobuf-java 3.25.8 explicitly below. -->
+            <!-- Substrait Java for filter / aggregate pushdown encoding. The bundle modules
+                 shade+relocate substrait and protobuf; downstream bundle users are isolated
+                 from Spark's runtime protobuf version. -->
             <dependency>
                 <groupId>io.substrait</groupId>
                 <artifactId>core</artifactId>
                 <version>${substrait-java.version}</version>
                 <exclusions>
-                    <!-- substrait-java pulls slf4j-api at runtime scope, which shadows the
-                         compile-time slf4j-api that Spark's Logging trait needs. Spark provides
-                         slf4j adapters at compile/test scope, so excluding here is safe. -->
+                    <!-- substrait-java's runtime-scope slf4j-api shadows the compile-time
+                         slf4j-api Spark's Logging trait needs. Spark provides slf4j adapters,
+                         so excluding here is safe. -->
                     <exclusion>
                         <groupId>org.slf4j</groupId>
                         <artifactId>slf4j-api</artifactId>
                     </exclusion>
                 </exclusions>
             </dependency>
-            <!-- Pin protobuf-java to substrait-java's required version. Tests run with this on
-                 the classpath; the bundle relocates both substrait + protobuf away from
-                 com.google.protobuf so Spark's runtime protobuf is unaffected. -->
+            <!-- Pin protobuf-java to the version substrait-java 0.84.1 was compiled against.
+                 substrait-java's bytecode calls APIs (e.g. LazyStringArrayList.emptyList())
+                 absent from Spark's provided protobuf 3.19.6 / 4.x. At runtime inside the
+                 bundle, protobuf is relocated and this version is irrelevant; this pin only
+                 matters for the un-shaded test classpath. -->
             <dependency>
                 <groupId>com.google.protobuf</groupId>
                 <artifactId>protobuf-java</artifactId>

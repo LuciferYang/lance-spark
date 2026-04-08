@@ -17,10 +17,8 @@ package org.lance.spark.substrait;
  * Translates Spark V2 {@link org.apache.spark.sql.connector.expressions.filter.Predicate} arrays
  * into Substrait {@code ExtendedExpression} bytes for {@code ScanOptions.substraitFilter}.
  *
- * <p><strong>Phase 1 deliverable.</strong> Resolves <a
+ * <p>Phase 1 marker class — implementation lands in a follow-up PR that closes <a
  * href="https://github.com/lance-format/lance-spark/issues/252">lance-format/lance-spark#252</a>.
- * Not implemented in this Phase 0 PR; this class exists only as a package marker so the design
- * doc's layout is committed.
  */
 public final class PredicateEncoder {
   private PredicateEncoder() {}

@@ -87,6 +87,24 @@
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer" />
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer" />
                             </transformers>
+                            <relocations>
+                                <!-- Relocate substrait-java + its protobuf dep so the bundle's
+                                     copy of protobuf does not collide with whatever protobuf
+                                     version Spark ships at runtime (3.19.6 on Spark 3.4/3.5,
+                                     4.29.3 on Spark 4.0, 4.33.0 on Spark 4.1). Both relocations
+                                     are required: substrait-java's bytecode references
+                                     com.google.protobuf.* directly, so relocating substrait
+                                     without also relocating protobuf would still leave it
+                                     calling Spark's protobuf at runtime. -->
+                                <relocation>
+                                    <pattern>io.substrait</pattern>
+                                    <shadedPattern>org.lance.spark.shaded.substrait</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>com.google.protobuf</pattern>
+                                    <shadedPattern>org.lance.spark.shaded.protobuf</shadedPattern>
+                                </relocation>
+                            </relocations>
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>

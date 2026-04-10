@@ -168,7 +168,10 @@ public class LanceDatasetCache {
                 @Override
                 public CachedDataset load(DatasetCacheKey key) {
                   LOG.debug("Opening dataset for cache: {}", key);
-                  Dataset dataset = openDataset(key);
+                  Dataset dataset =
+                      Utils.openDatasetBuilder(key.readOptions)
+                          .initialStorageOptions(key.initialStorageOptions)
+                          .build();
                   return new CachedDataset(dataset);
                 }
               });
@@ -231,12 +234,6 @@ public class LanceDatasetCache {
               cached.getFragments().keySet()));
     }
     return fragment;
-  }
-
-  private static Dataset openDataset(DatasetCacheKey key) {
-    return Utils.openDatasetBuilder(key.readOptions)
-        .initialStorageOptions(key.initialStorageOptions)
-        .build();
   }
 
   /** Clears the cache. Primarily for testing. */

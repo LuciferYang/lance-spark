@@ -64,7 +64,10 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
     LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
     long totalCount = 0;
 
-    try (Dataset dataset = openDataset(readOptions)) {
+    try (Dataset dataset =
+        Utils.openDatasetBuilder(readOptions)
+            .initialStorageOptions(inputPartition.getInitialStorageOptions())
+            .build()) {
       List<Integer> fragmentIds = inputPartition.getLanceSplit().getFragments();
       if (fragmentIds.isEmpty()) {
         return 0;
@@ -89,12 +92,6 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
     }
 
     return totalCount;
-  }
-
-  private Dataset openDataset(LanceSparkReadOptions readOptions) {
-    return Utils.openDatasetBuilder(readOptions)
-        .initialStorageOptions(inputPartition.getInitialStorageOptions())
-        .build();
   }
 
   private ColumnarBatch createCountResultBatch(long count, StructType resultSchema) {

@@ -294,7 +294,10 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
       List<FragmentMetadata> updatedFragments = new ArrayList<>();
 
       // Deleting updated rows from old fragments using SDK directly.
-      try (Dataset dataset = openDataset(writeOptions)) {
+      try (Dataset dataset =
+          Utils.openDatasetBuilder(writeOptions)
+              .initialStorageOptions(initialStorageOptions)
+              .build()) {
         this.deletedRows.forEach(
             (fragmentId, rowIndexes) -> {
               FragmentMetadata updatedFragment =
@@ -308,11 +311,6 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
       }
 
       return new DeltaWriteTaskCommit(removedFragmentIds, updatedFragments, newFragments);
-    }
-
-    private Dataset openDataset(LanceSparkWriteOptions options) {
-      // Note: options.hasNamespace() is false on workers (namespace is transient)
-      return Utils.openDatasetBuilder(options).initialStorageOptions(initialStorageOptions).build();
     }
 
     @Override

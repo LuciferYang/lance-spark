@@ -306,9 +306,9 @@ case class FragmentIndexTask(
       .withFragmentIds(Collections.singletonList(fragmentId))
       .build()
 
-    val dataset = IndexUtils.openDatasetWithOptions(
-      readOptions,
-      initialStorageOptions)
+    val dataset = Utils.openDatasetBuilder(readOptions)
+      .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
+      .build()
 
     try {
       dataset.createIndex(indexOptions)
@@ -477,9 +477,10 @@ case class RangeBTreeIndexBuilder(
     var dataset: Dataset = null
 
     try {
-      dataset = IndexUtils.openDatasetWithOptions(
-        decode[LanceSparkReadOptions](encodedReadOptions),
-        initialStorageOptions)
+      dataset = Utils.openDatasetBuilder(
+        decode[LanceSparkReadOptions](encodedReadOptions))
+        .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
+        .build()
 
       Data.exportArrayStream(allocator, reader, stream)
 
@@ -560,12 +561,4 @@ object IndexUtils {
     }
   }
 
-  /** Opens a dataset, merging driver-side {@code initialStorageOptions} into {@code readOptions}. */
-  def openDatasetWithOptions(
-      readOptions: LanceSparkReadOptions,
-      initialStorageOptions: Option[Map[String, String]]): Dataset = {
-    Utils.openDatasetBuilder(readOptions)
-      .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
-      .build()
-  }
 }

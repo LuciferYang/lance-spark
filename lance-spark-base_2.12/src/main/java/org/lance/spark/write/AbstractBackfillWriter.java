@@ -137,7 +137,10 @@ public abstract class AbstractBackfillWriter implements DataWriter<InternalRow> 
           ArrowArrayStream stream = ArrowArrayStream.allocateNew(allocator)) {
         Data.exportArrayStream(allocator, reader, stream);
 
-        try (Dataset dataset = openDatasetWithCredentialRefresh()) {
+        try (Dataset dataset =
+            Utils.openDatasetBuilder(writeOptions)
+                .initialStorageOptions(initialStorageOptions)
+                .build()) {
           Fragment fragment = new Fragment(dataset, fragmentId);
           processFragment(fragment, stream);
         }
@@ -176,11 +179,5 @@ public abstract class AbstractBackfillWriter implements DataWriter<InternalRow> 
       buffer.data.close();
     }
     buffers.clear();
-  }
-
-  private Dataset openDatasetWithCredentialRefresh() {
-    return Utils.openDatasetBuilder(writeOptions)
-        .initialStorageOptions(initialStorageOptions)
-        .build();
   }
 }

@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class UtilsTest {
 
   @Test
-  public void testParseVersion_validValues() {
+  public void testParseVersionValidValues() {
     assertEquals(0L, Utils.parseVersion("0"));
     assertEquals(1L, Utils.parseVersion("1"));
     assertEquals(42L, Utils.parseVersion("42"));
@@ -38,7 +38,7 @@ public class UtilsTest {
   }
 
   @Test
-  public void testParseVersion_maxUnsigned() {
+  public void testParseVersionMaxUnsigned() {
     // -1L as unsigned = 18446744073709551615
     long maxUnsigned = -1L;
     String maxUnsignedStr = Long.toUnsignedString(maxUnsigned);
@@ -46,7 +46,7 @@ public class UtilsTest {
   }
 
   @Test
-  public void testParseVersion_invalidInput() {
+  public void testParseVersionInvalidInput() {
     assertThrows(NumberFormatException.class, () -> Utils.parseVersion("abc"));
     assertThrows(NumberFormatException.class, () -> Utils.parseVersion(""));
     assertThrows(NumberFormatException.class, () -> Utils.parseVersion("-1"));
@@ -65,54 +65,54 @@ public class UtilsTest {
   }
 
   @Test
-  public void testFindVersion_singleVersion() {
+  public void testFindVersionSingleVersion() {
     // version at epoch second 1 → timestamp 1_000_000 micros
     List<Version> versions = Collections.singletonList(version(1, 1));
     assertEquals(1L, Utils.findVersion(versions, 1_000_000L));
   }
 
   @Test
-  public void testFindVersion_exactMatch() {
+  public void testFindVersionExactMatch() {
     List<Version> versions = Arrays.asList(version(1, 1), version(2, 2), version(3, 3));
     // 2_000_000 micros = epoch second 2 → exact match on v2
     assertEquals(2L, Utils.findVersion(versions, 2_000_000L));
   }
 
   @Test
-  public void testFindVersion_betweenVersions() {
+  public void testFindVersionBetweenVersions() {
     List<Version> versions = Arrays.asList(version(1, 1), version(2, 3));
     // 2_000_000 micros (second 2) is between v1(1s) and v2(3s) → returns v1
     assertEquals(1L, Utils.findVersion(versions, 2_000_000L));
   }
 
   @Test
-  public void testFindVersion_afterAllVersions() {
+  public void testFindVersionAfterAllVersions() {
     List<Version> versions = Arrays.asList(version(1, 1), version(2, 2));
     // 5_000_000 micros (second 5) is after all versions → returns last version
     assertEquals(2L, Utils.findVersion(versions, 5_000_000L));
   }
 
   @Test
-  public void testFindVersion_beforeAllVersions_throws() {
+  public void testFindVersionBeforeAllVersionsThrows() {
     List<Version> versions = Collections.singletonList(version(1, 2));
     // 1_000_000 micros (second 1) is before v1(2s) → throws
     assertThrows(IllegalArgumentException.class, () -> Utils.findVersion(versions, 1_000_000L));
   }
 
   @Test
-  public void testFindVersion_emptyList_throws() {
+  public void testFindVersionEmptyListThrows() {
     List<Version> versions = Collections.emptyList();
     assertThrows(IllegalArgumentException.class, () -> Utils.findVersion(versions, 1_000_000L));
   }
 
   @Test
-  public void testFindVersion_negativeTimestamp_throws() {
+  public void testFindVersionNegativeTimestampThrows() {
     List<Version> versions = Collections.singletonList(version(1, 1));
     assertThrows(IllegalArgumentException.class, () -> Utils.findVersion(versions, -1L));
   }
 
   @Test
-  public void testFindVersion_zeroTimestamp_throws() {
+  public void testFindVersionZeroTimestampThrows() {
     List<Version> versions = Collections.singletonList(version(1, 1));
     assertThrows(IllegalArgumentException.class, () -> Utils.findVersion(versions, 0L));
   }

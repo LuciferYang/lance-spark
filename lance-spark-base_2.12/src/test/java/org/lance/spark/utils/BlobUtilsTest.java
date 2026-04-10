@@ -31,25 +31,25 @@ import static org.junit.jupiter.api.Assertions.*;
 public class BlobUtilsTest {
 
   @Test
-  public void testIsBlobSparkField_nullField() {
+  public void testIsBlobSparkFieldNullField() {
     assertFalse(BlobUtils.isBlobSparkField(null));
   }
 
   @Test
-  public void testIsBlobSparkField_emptyMetadata() {
+  public void testIsBlobSparkFieldEmptyMetadata() {
     StructField field = DataTypes.createStructField("col", DataTypes.BinaryType, true);
     assertFalse(BlobUtils.isBlobSparkField(field));
   }
 
   @Test
-  public void testIsBlobSparkField_noKey() {
+  public void testIsBlobSparkFieldNoKey() {
     Metadata metadata = new MetadataBuilder().putString("other-key", "value").build();
     StructField field = new StructField("col", DataTypes.BinaryType, true, metadata);
     assertFalse(BlobUtils.isBlobSparkField(field));
   }
 
   @Test
-  public void testIsBlobSparkField_wrongValue() {
+  public void testIsBlobSparkFieldWrongValue() {
     Metadata metadata =
         new MetadataBuilder().putString(BlobUtils.LANCE_ENCODING_BLOB_KEY, "false").build();
     StructField field = new StructField("col", DataTypes.BinaryType, true, metadata);
@@ -57,7 +57,7 @@ public class BlobUtilsTest {
   }
 
   @Test
-  public void testIsBlobSparkField_valid() {
+  public void testIsBlobSparkFieldValid() {
     Metadata metadata =
         new MetadataBuilder()
             .putString(BlobUtils.LANCE_ENCODING_BLOB_KEY, BlobUtils.LANCE_ENCODING_BLOB_VALUE)
@@ -67,7 +67,7 @@ public class BlobUtilsTest {
   }
 
   @Test
-  public void testIsBlobSparkField_caseInsensitive() {
+  public void testIsBlobSparkFieldCaseInsensitive() {
     Metadata metadata =
         new MetadataBuilder().putString(BlobUtils.LANCE_ENCODING_BLOB_KEY, "TRUE").build();
     StructField field = new StructField("col", DataTypes.BinaryType, true, metadata);
@@ -75,18 +75,18 @@ public class BlobUtilsTest {
   }
 
   @Test
-  public void testIsBlobArrowField_nullField() {
+  public void testIsBlobArrowFieldNullField() {
     assertFalse(BlobUtils.isBlobArrowField(null));
   }
 
   @Test
-  public void testIsBlobArrowField_noMetadata() {
+  public void testIsBlobArrowFieldNoMetadata() {
     Field field = new Field("col", FieldType.nullable(new ArrowType.Binary()), null);
     assertFalse(BlobUtils.isBlobArrowField(field));
   }
 
   @Test
-  public void testIsBlobArrowField_noKey() {
+  public void testIsBlobArrowFieldNoKey() {
     Map<String, String> meta = new HashMap<>();
     meta.put("other-key", "value");
     Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);
@@ -94,7 +94,7 @@ public class BlobUtilsTest {
   }
 
   @Test
-  public void testIsBlobArrowField_wrongValue() {
+  public void testIsBlobArrowFieldWrongValue() {
     Map<String, String> meta = new HashMap<>();
     meta.put(BlobUtils.LANCE_ENCODING_BLOB_KEY, "false");
     Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);
@@ -102,7 +102,7 @@ public class BlobUtilsTest {
   }
 
   @Test
-  public void testIsBlobArrowField_valid() {
+  public void testIsBlobArrowFieldValid() {
     Map<String, String> meta = new HashMap<>();
     meta.put(BlobUtils.LANCE_ENCODING_BLOB_KEY, BlobUtils.LANCE_ENCODING_BLOB_VALUE);
     Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);
@@ -110,7 +110,7 @@ public class BlobUtilsTest {
   }
 
   @Test
-  public void testIsBlobArrowField_caseInsensitive() {
+  public void testIsBlobArrowFieldCaseInsensitive() {
     Map<String, String> meta = new HashMap<>();
     meta.put(BlobUtils.LANCE_ENCODING_BLOB_KEY, "True");
     Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);

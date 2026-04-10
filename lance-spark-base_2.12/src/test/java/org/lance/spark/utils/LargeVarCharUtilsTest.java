@@ -31,12 +31,12 @@ import static org.junit.jupiter.api.Assertions.*;
 public class LargeVarCharUtilsTest {
 
   @Test
-  public void testIsLargeVarCharSparkField_nullField() {
+  public void testIsLargeVarCharSparkFieldNullField() {
     assertFalse(LargeVarCharUtils.isLargeVarCharSparkField(null));
   }
 
   @Test
-  public void testIsLargeVarCharSparkField_nonStringType() {
+  public void testIsLargeVarCharSparkFieldNonStringType() {
     // Provide valid metadata so the type-check branch (not the metadata-absent branch) is exercised
     Metadata metadata =
         new MetadataBuilder()
@@ -49,20 +49,20 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharSparkField_stringNoMetadata() {
+  public void testIsLargeVarCharSparkFieldStringNoMetadata() {
     StructField field = DataTypes.createStructField("col", DataTypes.StringType, true);
     assertFalse(LargeVarCharUtils.isLargeVarCharSparkField(field));
   }
 
   @Test
-  public void testIsLargeVarCharSparkField_stringNoKey() {
+  public void testIsLargeVarCharSparkFieldStringNoKey() {
     Metadata metadata = new MetadataBuilder().putString("other-key", "value").build();
     StructField field = new StructField("col", DataTypes.StringType, true, metadata);
     assertFalse(LargeVarCharUtils.isLargeVarCharSparkField(field));
   }
 
   @Test
-  public void testIsLargeVarCharSparkField_wrongValue() {
+  public void testIsLargeVarCharSparkFieldWrongValue() {
     Metadata metadata =
         new MetadataBuilder()
             .putString(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "false")
@@ -72,7 +72,7 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharSparkField_valid() {
+  public void testIsLargeVarCharSparkFieldValid() {
     Metadata metadata =
         new MetadataBuilder()
             .putString(
@@ -84,7 +84,7 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharSparkField_caseInsensitive() {
+  public void testIsLargeVarCharSparkFieldCaseInsensitive() {
     Metadata metadata =
         new MetadataBuilder().putString(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "TRUE").build();
     StructField field = new StructField("col", DataTypes.StringType, true, metadata);
@@ -92,18 +92,18 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharArrowField_nullField() {
+  public void testIsLargeVarCharArrowFieldNullField() {
     assertFalse(LargeVarCharUtils.isLargeVarCharArrowField(null));
   }
 
   @Test
-  public void testIsLargeVarCharArrowField_noMetadata() {
+  public void testIsLargeVarCharArrowFieldNoMetadata() {
     Field field = new Field("col", FieldType.nullable(new ArrowType.Utf8()), null);
     assertFalse(LargeVarCharUtils.isLargeVarCharArrowField(field));
   }
 
   @Test
-  public void testIsLargeVarCharArrowField_noKey() {
+  public void testIsLargeVarCharArrowFieldNoKey() {
     Map<String, String> meta = new HashMap<>();
     meta.put("other-key", "value");
     Field field = new Field("col", new FieldType(true, new ArrowType.Utf8(), null, meta), null);
@@ -111,7 +111,7 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharArrowField_wrongValue() {
+  public void testIsLargeVarCharArrowFieldWrongValue() {
     Map<String, String> meta = new HashMap<>();
     meta.put(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "false");
     Field field = new Field("col", new FieldType(true, new ArrowType.Utf8(), null, meta), null);
@@ -119,7 +119,7 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharArrowField_valid() {
+  public void testIsLargeVarCharArrowFieldValid() {
     Map<String, String> meta = new HashMap<>();
     meta.put(
         LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE);
@@ -128,7 +128,7 @@ public class LargeVarCharUtilsTest {
   }
 
   @Test
-  public void testIsLargeVarCharArrowField_caseInsensitive() {
+  public void testIsLargeVarCharArrowFieldCaseInsensitive() {
     Map<String, String> meta = new HashMap<>();
     meta.put(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "True");
     Field field = new Field("col", new FieldType(true, new ArrowType.Utf8(), null, meta), null);

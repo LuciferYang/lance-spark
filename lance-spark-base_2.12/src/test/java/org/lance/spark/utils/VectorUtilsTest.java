@@ -32,18 +32,18 @@ import static org.junit.jupiter.api.Assertions.*;
 public class VectorUtilsTest {
 
   @Test
-  public void testIsVectorField_nullField() {
+  public void testIsVectorFieldNullField() {
     assertFalse(VectorUtils.isVectorField(null));
   }
 
   @Test
-  public void testIsVectorField_nonArrayType() {
+  public void testIsVectorFieldNonArrayType() {
     StructField field = DataTypes.createStructField("col", DataTypes.IntegerType, true);
     assertFalse(VectorUtils.isVectorField(field));
   }
 
   @Test
-  public void testIsVectorField_arrayOfNonNumeric() {
+  public void testIsVectorFieldArrayOfNonNumeric() {
     // Provide valid vector metadata so the element-type check (not the metadata-absent check)
     // is the branch that returns false
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.StringType);
@@ -54,7 +54,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorField_arrayOfIntType() {
+  public void testIsVectorFieldArrayOfIntType() {
     // Provide valid vector metadata so the element-type check (not the metadata-absent check)
     // is the branch that returns false
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.IntegerType);
@@ -65,14 +65,14 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorField_floatArrayNoMetadata() {
+  public void testIsVectorFieldFloatArrayNoMetadata() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     StructField field = DataTypes.createStructField("col", arrayType, true);
     assertFalse(VectorUtils.isVectorField(field));
   }
 
   @Test
-  public void testIsVectorField_floatArrayWithMetadata() {
+  public void testIsVectorFieldFloatArrayWithMetadata() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 128).build();
@@ -81,7 +81,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorField_doubleArrayWithMetadata() {
+  public void testIsVectorFieldDoubleArrayWithMetadata() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.DoubleType);
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 64).build();
@@ -90,13 +90,13 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testGetVectorDimension_nonVectorField() {
+  public void testGetVectorDimensionNonVectorField() {
     StructField field = DataTypes.createStructField("col", DataTypes.IntegerType, true);
     assertEquals(-1, VectorUtils.getVectorDimension(field));
   }
 
   @Test
-  public void testGetVectorDimension_malformedMetadata() {
+  public void testGetVectorDimensionMalformedMetadata() {
     // Metadata key exists but is not a long → exercises the try-catch fallback to -1
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     Metadata metadata =
@@ -108,7 +108,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testGetVectorDimension_validVectorField() {
+  public void testGetVectorDimensionValidVectorField() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 256).build();
@@ -117,18 +117,18 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorArrowField_nullField() {
+  public void testIsVectorArrowFieldNullField() {
     assertFalse(VectorUtils.isVectorArrowField(null));
   }
 
   @Test
-  public void testIsVectorArrowField_nonFixedSizeList() {
+  public void testIsVectorArrowFieldNonFixedSizeList() {
     Field field = new Field("col", FieldType.nullable(new ArrowType.Utf8()), null);
     assertFalse(VectorUtils.isVectorArrowField(field));
   }
 
   @Test
-  public void testIsVectorArrowField_fixedSizeListNoChildren() {
+  public void testIsVectorArrowFieldFixedSizeListNoChildren() {
     Field field =
         new Field(
             "vec", FieldType.nullable(new ArrowType.FixedSizeList(128)), Collections.emptyList());
@@ -136,7 +136,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorArrowField_fixedSizeListNonFloatChild() {
+  public void testIsVectorArrowFieldFixedSizeListNonFloatChild() {
     Field child = new Field("item", FieldType.nullable(new ArrowType.Int(32, true)), null);
     Field field =
         new Field(
@@ -147,7 +147,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorArrowField_validFloatVector() {
+  public void testIsVectorArrowFieldValidFloatVector() {
     Field child =
         new Field(
             "item",
@@ -162,7 +162,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testIsVectorArrowField_validDoubleVector() {
+  public void testIsVectorArrowFieldValidDoubleVector() {
     Field child =
         new Field(
             "item",
@@ -177,13 +177,13 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testGetVectorArrowDimension_nonVectorField() {
+  public void testGetVectorArrowDimensionNonVectorField() {
     Field field = new Field("col", FieldType.nullable(new ArrowType.Utf8()), null);
     assertEquals(-1, VectorUtils.getVectorArrowDimension(field));
   }
 
   @Test
-  public void testGetVectorArrowDimension_validVector() {
+  public void testGetVectorArrowDimensionValidVector() {
     Field child =
         new Field(
             "item",
@@ -198,26 +198,26 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testShouldBeFixedSizeList_nullMetadata() {
+  public void testShouldBeFixedSizeListNullMetadata() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     assertFalse(VectorUtils.shouldBeFixedSizeList(arrayType, null));
   }
 
   @Test
-  public void testShouldBeFixedSizeList_noMetadataKey() {
+  public void testShouldBeFixedSizeListNoMetadataKey() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     assertFalse(VectorUtils.shouldBeFixedSizeList(arrayType, Metadata.empty()));
   }
 
   @Test
-  public void testShouldBeFixedSizeList_nonArrayType() {
+  public void testShouldBeFixedSizeListNonArrayType() {
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 128).build();
     assertFalse(VectorUtils.shouldBeFixedSizeList(DataTypes.StringType, metadata));
   }
 
   @Test
-  public void testShouldBeFixedSizeList_arrayOfNonNumeric() {
+  public void testShouldBeFixedSizeListArrayOfNonNumeric() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.StringType);
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 128).build();
@@ -225,7 +225,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testShouldBeFixedSizeList_validFloat() {
+  public void testShouldBeFixedSizeListValidFloat() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.FloatType);
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 128).build();
@@ -233,7 +233,7 @@ public class VectorUtilsTest {
   }
 
   @Test
-  public void testShouldBeFixedSizeList_validDouble() {
+  public void testShouldBeFixedSizeListValidDouble() {
     ArrayType arrayType = DataTypes.createArrayType(DataTypes.DoubleType);
     Metadata metadata =
         new MetadataBuilder().putLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY, 64).build();

@@ -179,8 +179,7 @@ public abstract class AbstractBackfillWriter implements DataWriter<InternalRow> 
   }
 
   private Dataset openDatasetWithCredentialRefresh() {
-    return Utils.openDatasetBuilder()
-        .writeOptions(writeOptions)
+    return Utils.openDatasetBuilder(writeOptions)
         .initialStorageOptions(initialStorageOptions)
         .build();
   }

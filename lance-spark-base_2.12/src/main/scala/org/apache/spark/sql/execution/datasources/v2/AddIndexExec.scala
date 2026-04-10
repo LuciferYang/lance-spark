@@ -68,7 +68,7 @@ case class AddIndexExec(
 
     // Get all fragment id list from dataset
     val fragmentIds = {
-      val ds = Utils.openDataset(readOptions)
+      val ds = Utils.openDatasetBuilder(readOptions).build()
       try {
         ds.getFragments.asScala.map(_.getId).map(Integer.valueOf).toList
       } finally {
@@ -87,7 +87,7 @@ case class AddIndexExec(
     // Create distributed index job and run it
     createIndexJob(lanceDataset, readOptions, uuid.toString, fragmentIds).run()
 
-    val dataset = Utils.openDataset(readOptions)
+    val dataset = Utils.openDatasetBuilder(readOptions).build()
     try {
       // Merge index metadata after all fragments are indexed
       dataset.mergeIndexMetadata(uuid.toString, indexType, Optional.empty())
@@ -564,8 +564,7 @@ object IndexUtils {
   def openDatasetWithOptions(
       readOptions: LanceSparkReadOptions,
       initialStorageOptions: Option[Map[String, String]]): Dataset = {
-    Utils.openDatasetBuilder()
-      .readOptions(readOptions)
+    Utils.openDatasetBuilder(readOptions)
       .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
       .build()
   }

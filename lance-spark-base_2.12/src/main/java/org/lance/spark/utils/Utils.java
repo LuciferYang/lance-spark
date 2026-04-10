@@ -52,106 +52,60 @@ public class Utils {
     return versionID;
   }
 
-  /** Opens a dataset via namespace path with read options (storage credentials, etc.). */
-  private static Dataset openDataset(
-      LanceNamespace namespace, List<String> tableId, ReadOptions readOptions) {
-    return Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .namespaceClient(namespace)
-        .tableId(tableId)
-        .readOptions(readOptions)
-        .build();
+  /** Returns a new builder for opening a dataset from read options. */
+  public static OpenDatasetBuilder openDatasetBuilder(LanceSparkReadOptions readOptions) {
+    return new OpenDatasetBuilder(readOptions);
   }
 
-  /** Opens a dataset via URI with the given read options. */
-  public static Dataset openDataset(String uri, ReadOptions readOptions) {
-    return Dataset.open()
-        .allocator(LanceRuntime.allocator())
-        .uri(uri)
-        .readOptions(readOptions)
-        .build();
-  }
-
-  /** Opens a dataset using read options, dispatching to namespace or URI path. */
-  public static Dataset openDataset(LanceSparkReadOptions readOptions) {
-    if (readOptions.hasNamespace()) {
-      return openDataset(
-          readOptions.getNamespace(), readOptions.getTableId(), readOptions.toReadOptions());
-    }
-    return openDataset(readOptions.getDatasetUri(), readOptions.toReadOptions());
-  }
-
-  /** Opens a dataset using write options, dispatching to namespace or URI path. */
-  public static Dataset openDataset(LanceSparkWriteOptions writeOptions) {
-    if (writeOptions.hasNamespace()) {
-      return openDataset(
-          writeOptions.getNamespace(), writeOptions.getTableId(), writeOptions.toReadOptions());
-    }
-    return openDataset(writeOptions.getDatasetUri(), writeOptions.toReadOptions());
-  }
-
-  /** Returns a new builder for opens that need storage-option merging or a specific session. */
-  public static OpenDatasetBuilder openDatasetBuilder() {
-    return new OpenDatasetBuilder();
+  /** Returns a new builder for opening a dataset from write options. */
+  public static OpenDatasetBuilder openDatasetBuilder(LanceSparkWriteOptions writeOptions) {
+    return new OpenDatasetBuilder(writeOptions);
   }
 
   /**
    * Builder for dataset opens that merge driver-side {@code initialStorageOptions} into the base
    * storage options and attach a managed {@link LanceRuntime} session.
-   *
-   * <p>Prefer {@link #readOptions(LanceSparkReadOptions)} or {@link
-   * #writeOptions(LanceSparkWriteOptions)} to populate fields from existing option objects; use the
-   * individual setters only when those are not available.
    */
   public static class OpenDatasetBuilder {
-    private String uri;
-    private Map<String, String> storageOptions;
+    private final String uri;
+    private final LanceNamespace namespace;
+    private final List<String> tableId;
+    private final Map<String, String> storageOptions;
+    private final String catalogName;
+    private final Long version;
+    private final Integer blockSize;
+    private final Integer indexCacheSize;
+    private final Integer metadataCacheSize;
+
     private Map<String, String> initialStorageOptions;
-    private String catalogName;
-    private Long version;
 
-    private OpenDatasetBuilder() {}
-
-    public OpenDatasetBuilder uri(String uri) {
-      this.uri = uri;
-      return this;
+    private OpenDatasetBuilder(LanceSparkReadOptions opts) {
+      this.uri = opts.getDatasetUri();
+      this.storageOptions = opts.getStorageOptions();
+      this.version = opts.getVersion() != null ? opts.getVersion().longValue() : null;
+      this.catalogName = opts.getCatalogName();
+      this.namespace = opts.getNamespace();
+      this.tableId = opts.getTableId();
+      this.blockSize = opts.getBlockSize();
+      this.indexCacheSize = opts.getIndexCacheSize();
+      this.metadataCacheSize = opts.getMetadataCacheSize();
     }
 
-    public OpenDatasetBuilder storageOptions(Map<String, String> storageOptions) {
-      this.storageOptions = storageOptions;
-      return this;
+    private OpenDatasetBuilder(LanceSparkWriteOptions opts) {
+      this.uri = opts.getDatasetUri();
+      this.storageOptions = opts.getStorageOptions();
+      this.namespace = opts.getNamespace();
+      this.tableId = opts.getTableId();
+      this.catalogName = null;
+      this.version = null;
+      this.blockSize = null;
+      this.indexCacheSize = null;
+      this.metadataCacheSize = null;
     }
 
-    /** Populates URI, storage options, version, and catalog name from the read options. */
-    public OpenDatasetBuilder readOptions(LanceSparkReadOptions readOptions) {
-      this.uri = readOptions.getDatasetUri();
-      this.storageOptions = readOptions.getStorageOptions();
-      this.version = readOptions.getVersion() != null ? readOptions.getVersion().longValue() : null;
-      this.catalogName = readOptions.getCatalogName();
-      return this;
-    }
-
-    /** Populates URI and storage options from the write options. */
-    public OpenDatasetBuilder writeOptions(LanceSparkWriteOptions writeOptions) {
-      this.uri = writeOptions.getDatasetUri();
-      this.storageOptions = writeOptions.getStorageOptions();
-      return this;
-    }
-
-    /** Sets initial storage options obtained from {@code describeTable()} on the driver. */
+    /** Sets initial storage options from {@code describeTable()}. */
     public OpenDatasetBuilder initialStorageOptions(Map<String, String> initialStorageOptions) {
       this.initialStorageOptions = initialStorageOptions;
-      return this;
-    }
-
-    /** Sets the catalog name used to pick an isolated {@link LanceRuntime} session. */
-    public OpenDatasetBuilder catalogName(String catalogName) {
-      this.catalogName = catalogName;
-      return this;
-    }
-
-    public OpenDatasetBuilder version(Long version) {
-      this.version = version;
       return this;
     }
 
@@ -167,7 +121,24 @@ public class Utils {
       if (version != null) {
         roBuilder.setVersion(version);
       }
+      if (blockSize != null) {
+        roBuilder.setBlockSize(blockSize);
+      }
+      if (indexCacheSize != null) {
+        roBuilder.setIndexCacheSize(indexCacheSize);
+      }
+      if (metadataCacheSize != null) {
+        roBuilder.setMetadataCacheSize(metadataCacheSize);
+      }
 
+      if (namespace != null && tableId != null) {
+        return Dataset.open()
+            .allocator(LanceRuntime.allocator())
+            .namespaceClient(namespace)
+            .tableId(tableId)
+            .readOptions(roBuilder.build())
+            .build();
+      }
       return Dataset.open()
           .allocator(LanceRuntime.allocator())
           .uri(uri)

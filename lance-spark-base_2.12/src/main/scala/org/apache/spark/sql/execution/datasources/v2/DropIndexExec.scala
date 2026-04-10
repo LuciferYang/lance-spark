@@ -43,7 +43,7 @@ case class LanceDropIndexExec(
 
     val readOptions = lanceDataset.readOptions()
 
-    val dataset = Utils.openDataset(readOptions)
+    val dataset = Utils.openDatasetBuilder(readOptions).build()
     try {
       dataset.dropIndex(indexName)
     } finally {

@@ -44,7 +44,7 @@ case class ShowIndexesExec(
 
     val readOptions = lanceDataset.readOptions()
 
-    val dataset = Utils.openDataset(readOptions)
+    val dataset = Utils.openDatasetBuilder(readOptions).build()
     try {
       val indexes = dataset.getIndexes().asScala.toSeq
       val fieldIdToName = dataset.getLanceSchema().fields().asScala

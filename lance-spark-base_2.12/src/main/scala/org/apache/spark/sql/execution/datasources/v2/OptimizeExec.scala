@@ -83,8 +83,7 @@ case class OptimizeExec(
 
     // Plan compaction tasks
     val tasks = {
-      val dataset = Utils.openDatasetBuilder()
-        .readOptions(readOptions)
+      val dataset = Utils.openDatasetBuilder(readOptions)
         .initialStorageOptions(initialStorageOpts.map(_.asJava).orNull)
         .build()
       try {
@@ -112,8 +111,7 @@ case class OptimizeExec(
 
     // Commit compaction results
     val metrics = {
-      val dataset = Utils.openDatasetBuilder()
-        .readOptions(readOptions)
+      val dataset = Utils.openDatasetBuilder(readOptions)
         .initialStorageOptions(initialStorageOpts.map(_.asJava).orNull)
         .build()
       try {
@@ -144,8 +142,7 @@ case class OptimizeTaskExecutor(
     val readOptions = decode[LanceSparkReadOptions](lanceConf)
     val compactionTask = decode[CompactionTask](task)
 
-    val dataset = Utils.openDatasetBuilder()
-      .readOptions(readOptions)
+    val dataset = Utils.openDatasetBuilder(readOptions)
       .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
       .build()
 

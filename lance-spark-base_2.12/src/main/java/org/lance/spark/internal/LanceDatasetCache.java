@@ -86,49 +86,30 @@ public class LanceDatasetCache {
     private final String catalogName;
     private final String uri;
     private final Long version;
-    private final Map<String, String> storageOptions;
-    private final Map<String, String> initialStorageOptions;
     private final String namespaceImpl;
     private final Map<String, String> namespaceProperties;
     private final List<String> tableId;
 
+    // Carried for the open call but not used in equals/hashCode.
+    private final LanceSparkReadOptions readOptions;
+    private final Map<String, String> initialStorageOptions;
+
     public DatasetCacheKey(
-        String catalogName,
-        String uri,
-        Long version,
-        Map<String, String> storageOptions,
+        LanceSparkReadOptions readOptions,
         Map<String, String> initialStorageOptions,
         String namespaceImpl,
-        Map<String, String> namespaceProperties,
-        List<String> tableId) {
-      this.catalogName = catalogName != null ? catalogName : LanceRuntime.DEFAULT_CATALOG;
-      this.uri = uri;
-      this.version = version;
-      this.storageOptions = storageOptions;
+        Map<String, String> namespaceProperties) {
+      this.readOptions = readOptions;
       this.initialStorageOptions = initialStorageOptions;
+      this.catalogName =
+          readOptions.getCatalogName() != null
+              ? readOptions.getCatalogName()
+              : LanceRuntime.DEFAULT_CATALOG;
+      this.uri = readOptions.getDatasetUri();
+      this.version = readOptions.getVersion() != null ? (long) readOptions.getVersion() : null;
       this.namespaceImpl = namespaceImpl;
       this.namespaceProperties = namespaceProperties;
-      this.tableId = tableId;
-    }
-
-    public String getCatalogName() {
-      return catalogName;
-    }
-
-    public String getUri() {
-      return uri;
-    }
-
-    public Long getVersion() {
-      return version;
-    }
-
-    public Map<String, String> getStorageOptions() {
-      return storageOptions;
-    }
-
-    public Map<String, String> getInitialStorageOptions() {
-      return initialStorageOptions;
+      this.tableId = readOptions.getTableId();
     }
 
     public String getNamespaceImpl() {
@@ -213,15 +194,7 @@ public class LanceDatasetCache {
       String namespaceImpl,
       Map<String, String> namespaceProperties) {
     DatasetCacheKey key =
-        new DatasetCacheKey(
-            readOptions.getCatalogName(),
-            readOptions.getDatasetUri(),
-            readOptions.getVersion() != null ? (long) readOptions.getVersion() : null,
-            readOptions.getStorageOptions(),
-            initialStorageOptions,
-            namespaceImpl,
-            namespaceProperties,
-            readOptions.getTableId());
+        new DatasetCacheKey(readOptions, initialStorageOptions, namespaceImpl, namespaceProperties);
     try {
       return CACHE.get(key);
     } catch (ExecutionException e) {
@@ -261,12 +234,8 @@ public class LanceDatasetCache {
   }
 
   private static Dataset openDataset(DatasetCacheKey key) {
-    return Utils.openDatasetBuilder()
-        .uri(key.getUri())
-        .storageOptions(key.getStorageOptions())
-        .initialStorageOptions(key.getInitialStorageOptions())
-        .catalogName(key.getCatalogName())
-        .version(key.getVersion())
+    return Utils.openDatasetBuilder(key.readOptions)
+        .initialStorageOptions(key.initialStorageOptions)
         .build();
   }
 

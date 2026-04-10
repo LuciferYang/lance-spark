@@ -74,7 +74,7 @@ public class LanceSplit implements Serializable {
    * version. The resolved version should be passed to workers to ensure snapshot isolation.
    */
   public static ScanPlanResult planScan(LanceSparkReadOptions readOptions) {
-    try (Dataset dataset = Utils.openDataset(readOptions)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(readOptions).build()) {
       List<Fragment> fragments = dataset.getFragments();
       List<LanceSplit> splits = new ArrayList<>(fragments.size());
       Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());

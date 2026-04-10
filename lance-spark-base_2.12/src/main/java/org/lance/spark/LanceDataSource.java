@@ -73,7 +73,7 @@ public abstract class LanceDataSource implements SupportsCatalogOptions, DataSou
       return null;
     }
     LanceSparkReadOptions readOptions = LanceSparkReadOptions.from(options.asCaseSensitiveMap());
-    try (Dataset dataset = Utils.openDataset(readOptions)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(readOptions).build()) {
       return LanceArrowUtils.fromArrowSchema(dataset.getSchema());
     } catch (IllegalArgumentException e) {
       return null;

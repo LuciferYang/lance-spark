@@ -47,7 +47,7 @@ case class SetUnenforcedPrimaryKeyExec(
     }
 
     val readOptions = lanceDataset.readOptions()
-    val dataset = Utils.openDataset(readOptions)
+    val dataset = Utils.openDatasetBuilder(readOptions).build()
     try {
       val lanceSchema = dataset.getLanceSchema
       val allFields = lanceSchema.fields().asScala.toSeq

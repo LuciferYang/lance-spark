@@ -133,7 +133,7 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
     Set<Integer> updatedFragmentIds =
         updatedFragments.stream().map(FragmentMetadata::getId).collect(Collectors.toSet());
 
-    try (Dataset dataset = Utils.openDataset(writeOptions)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(writeOptions).build()) {
       // Add unmodified fragments back
       dataset.getFragments().stream()
           .filter(f -> !updatedFragmentIds.contains(f.getId()))
@@ -142,7 +142,7 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
     }
 
     // Commit update operation using CommitBuilder
-    try (Dataset dataset = Utils.openDataset(writeOptions)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(writeOptions).build()) {
       Update update =
           Update.builder()
               .updatedFragments(updatedFragments)

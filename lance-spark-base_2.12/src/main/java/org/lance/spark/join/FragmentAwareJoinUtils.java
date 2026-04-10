@@ -191,7 +191,7 @@ public class FragmentAwareJoinUtils implements Serializable {
 
   /** Opens the dataset and returns its fragment IDs. */
   private static List<Integer> getFragmentIds(LanceSparkReadOptions options) {
-    try (Dataset dataset = Utils.openDataset(options)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(options).build()) {
       return dataset.getFragments().stream().map(Fragment::getId).collect(Collectors.toList());
     }
   }

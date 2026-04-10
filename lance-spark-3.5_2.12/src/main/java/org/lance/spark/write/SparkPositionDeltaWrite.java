@@ -142,7 +142,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
               });
 
       // Use SDK directly to update fragments
-      try (Dataset dataset = Utils.openDataset(writeOptions)) {
+      try (Dataset dataset = Utils.openDatasetBuilder(writeOptions).build()) {
         Update update =
             Update.builder()
                 .removedFragmentIds(removedFragmentIds)
@@ -312,10 +312,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
 
     private Dataset openDataset(LanceSparkWriteOptions options) {
       // Note: options.hasNamespace() is false on workers (namespace is transient)
-      return Utils.openDatasetBuilder()
-          .writeOptions(options)
-          .initialStorageOptions(initialStorageOptions)
-          .build();
+      return Utils.openDatasetBuilder(options).initialStorageOptions(initialStorageOptions).build();
     }
 
     @Override

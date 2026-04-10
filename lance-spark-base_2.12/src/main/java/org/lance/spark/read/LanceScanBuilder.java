@@ -97,7 +97,7 @@ public class LanceScanBuilder
    */
   private Dataset getOrOpenDataset() {
     if (lazyDataset == null) {
-      lazyDataset = Utils.openDataset(readOptions);
+      lazyDataset = Utils.openDatasetBuilder(readOptions).build();
     }
     return lazyDataset;
   }

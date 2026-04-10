@@ -92,8 +92,7 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
   }
 
   private Dataset openDataset(LanceSparkReadOptions readOptions) {
-    return Utils.openDatasetBuilder()
-        .readOptions(readOptions)
+    return Utils.openDatasetBuilder(readOptions)
         .initialStorageOptions(inputPartition.getInitialStorageOptions())
         .build();
   }

@@ -58,7 +58,7 @@ case class VacuumExec(
     val readOptions = lanceDataset.readOptions()
 
     val stats = {
-      val dataset = Utils.openDataset(readOptions)
+      val dataset = Utils.openDatasetBuilder(readOptions).build()
       try {
         dataset.cleanupWithPolicy(policy)
       } finally {

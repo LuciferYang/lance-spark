@@ -131,7 +131,7 @@ public class AddColumnsBackfillBatchWrite implements BatchWrite {
         fragments.stream().map(FragmentMetadata::getId).collect(Collectors.toSet());
 
     // Get existing fragments
-    try (Dataset dataset = Utils.openDataset(writeOptions)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(writeOptions).build()) {
       dataset.getFragments().stream()
           .filter(f -> !mergedFragmentIds.contains(f.getId()))
           .map(Fragment::metadata)
@@ -140,7 +140,7 @@ public class AddColumnsBackfillBatchWrite implements BatchWrite {
 
     // Commit merge operation using CommitBuilder
     Schema arrowSchema = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false);
-    try (Dataset dataset = Utils.openDataset(writeOptions)) {
+    try (Dataset dataset = Utils.openDatasetBuilder(writeOptions).build()) {
       Merge merge = Merge.builder().fragments(fragments).schema(arrowSchema).build();
       try (Transaction txn =
               new Transaction.Builder().readVersion(dataset.version()).operation(merge).build();

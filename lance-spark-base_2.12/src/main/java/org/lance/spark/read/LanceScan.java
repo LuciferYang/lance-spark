@@ -48,6 +48,7 @@ import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -397,6 +398,41 @@ public class LanceScan
   @Override
   public Statistics estimateStatistics() {
     return statistics;
+  }
+
+  /**
+   * Two LanceScan instances are equal when they read the same data in the same way. This is
+   * required for Spark's ReusedExchange optimization: {@code BatchScanExec.equals()} compares
+   * {@code batch} objects, which are the LanceScan instances themselves (since LanceScan implements
+   * Batch). Without this, every scan gets a distinct identity and exchanges are never reused.
+   *
+   * <p>The {@code scanId} field is intentionally excluded — it is a per-instance UUID used only for
+   * logging/tracing, not for defining scan identity.
+   */
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    LanceScan that = (LanceScan) o;
+    return Objects.equals(schema, that.schema)
+        && Objects.equals(readOptions, that.readOptions)
+        && Objects.equals(whereConditions, that.whereConditions)
+        && Objects.equals(limit, that.limit)
+        && Objects.equals(offset, that.offset)
+        && Objects.equals(topNSortOrders, that.topNSortOrders)
+        && Objects.equals(pushedAggregation, that.pushedAggregation)
+        && Arrays.equals(pushedFilters, that.pushedFilters);
+  }
+
+  @Override
+  public int hashCode() {
+    int result = Objects.hash(schema, readOptions, whereConditions, limit, offset);
+    result = 31 * result + Arrays.hashCode(pushedFilters);
+    return result;
   }
 
   private static class LanceReaderFactory implements PartitionReaderFactory {

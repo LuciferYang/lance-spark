@@ -82,13 +82,6 @@ public class FragmentLoadingBenchmarkTest {
     }
 
     System.out.println();
-    System.out.println("Notes:");
-    System.out.println("- getFragments(): loads ALL fragment metadata (old eager approach)");
-    System.out.println("- getFragment(id): loads ONE fragment by ID (new lazy approach)");
-    System.out.println(
-        "- Each worker partition only needs one fragment, so the lazy approach avoids");
-    System.out.println("  loading metadata for all other fragments in the dataset.");
-    System.out.println();
   }
 
   /**

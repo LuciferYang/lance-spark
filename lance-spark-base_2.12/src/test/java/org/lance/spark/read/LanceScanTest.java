@@ -241,4 +241,57 @@ public class LanceScanTest {
     Partitioning partitioning = scan.outputPartitioning();
     assertInstanceOf(UnknownPartitioning.class, partitioning);
   }
+
+  // --- equals / hashCode (required for ReusedExchange) ---
+
+  @Test
+  public void testEqualsForIdenticalScans() {
+    LanceScan scan1 = buildScan();
+    LanceScan scan2 = buildScan();
+    assertEquals(scan1, scan2, "Two scans of the same table should be equal for ReusedExchange");
+  }
+
+  @Test
+  public void testHashCodeConsistentWithEquals() {
+    LanceScan scan1 = buildScan();
+    LanceScan scan2 = buildScan();
+    assertEquals(scan1.hashCode(), scan2.hashCode(), "Equal scans must have the same hashCode");
+  }
+
+  @Test
+  public void testNotEqualWithDifferentFilters() {
+    LanceScan scan1 = buildScan();
+
+    LanceScanBuilder builder2 =
+        new LanceScanBuilder(
+            TEST_SCHEMA,
+            TestUtils.TestTable1Config.readOptions,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap(),
+            Collections.emptyMap());
+    builder2.pushFilters(new Filter[] {new GreaterThan("x", 0L)});
+    LanceScan scan2 = (LanceScan) builder2.build();
+
+    assertNotEquals(scan1, scan2, "Scans with different filters should not be equal");
+  }
+
+  @Test
+  public void testNotEqualWithDifferentSchema() {
+    LanceScan scan1 = buildScan();
+
+    StructType differentSchema = new StructType().add("x", DataTypes.LongType);
+    LanceScan scan2 =
+        (LanceScan)
+            new LanceScanBuilder(
+                    differentSchema,
+                    TestUtils.TestTable1Config.readOptions,
+                    Collections.emptyMap(),
+                    null,
+                    Collections.emptyMap(),
+                    Collections.emptyMap())
+                .build();
+
+    assertNotEquals(scan1, scan2, "Scans with different schemas should not be equal");
+  }
 }

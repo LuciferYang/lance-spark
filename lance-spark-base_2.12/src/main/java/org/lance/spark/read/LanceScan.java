@@ -48,6 +48,7 @@ import java.io.Serializable;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -397,6 +398,84 @@ public class LanceScan
   @Override
   public Statistics estimateStatistics() {
     return statistics;
+  }
+
+  /**
+   * Required for Spark's ReusedExchange: {@code BatchScanExec.equals()} compares {@code batch}
+   * objects, which delegate to this method since LanceScan implements Batch.
+   *
+   * <p>Excludes {@code scanId} (per-instance tracing UUID, not scan identity).
+   */
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    LanceScan that = (LanceScan) o;
+    return Objects.equals(schema, that.schema)
+        && Objects.equals(readOptions, that.readOptions)
+        && Objects.equals(whereConditions, that.whereConditions)
+        && Objects.equals(limit, that.limit)
+        && Objects.equals(offset, that.offset)
+        && Objects.equals(topNSortOrders.toString(), that.topNSortOrders.toString())
+        && aggregationEquals(pushedAggregation, that.pushedAggregation)
+        && equivalentFilters(pushedFilters, that.pushedFilters);
+  }
+
+  @Override
+  public int hashCode() {
+    int result =
+        Objects.hash(
+            schema, readOptions, whereConditions, limit, offset, topNSortOrders.toString());
+    result = 31 * result + Arrays.hashCode(sortedByHash(pushedFilters));
+    result = 31 * result + aggregationHashCode(pushedAggregation);
+    return result;
+  }
+
+  /**
+   * Compares two Optional&lt;Aggregation&gt; by value. {@code Aggregation}'s auto-generated {@code
+   * equals()} uses reference identity for its array components, so we sort by hashCode and compare
+   * element-wise — following {@code AggregatePushDownUtils.equivalentAggregations()}.
+   */
+  private static boolean aggregationEquals(Optional<Aggregation> a, Optional<Aggregation> b) {
+    if (a.isPresent() != b.isPresent()) {
+      return false;
+    }
+    if (!a.isPresent()) {
+      return true;
+    }
+    Aggregation agg1 = a.get();
+    Aggregation agg2 = b.get();
+    return Arrays.equals(
+            sortedByHash(agg1.aggregateExpressions()), sortedByHash(agg2.aggregateExpressions()))
+        && Arrays.equals(
+            sortedByHash(agg1.groupByExpressions()), sortedByHash(agg2.groupByExpressions()));
+  }
+
+  private static int aggregationHashCode(Optional<Aggregation> agg) {
+    if (!agg.isPresent()) {
+      return 0;
+    }
+    return Objects.hash(
+        Arrays.hashCode(sortedByHash(agg.get().aggregateExpressions())),
+        Arrays.hashCode(sortedByHash(agg.get().groupByExpressions())));
+  }
+
+  /**
+   * Returns whether two filter arrays are equivalent regardless of order. Follows Spark's {@code
+   * FileScan.equivalentFilters()}: sort by hashCode, then compare element-wise.
+   */
+  private static boolean equivalentFilters(Filter[] a, Filter[] b) {
+    return Arrays.equals(sortedByHash(a), sortedByHash(b));
+  }
+
+  private static <T> T[] sortedByHash(T[] arr) {
+    T[] copy = Arrays.copyOf(arr, arr.length);
+    Arrays.sort(copy, (x, y) -> Integer.compare(x.hashCode(), y.hashCode()));
+    return copy;
   }
 
   private static class LanceReaderFactory implements PartitionReaderFactory {

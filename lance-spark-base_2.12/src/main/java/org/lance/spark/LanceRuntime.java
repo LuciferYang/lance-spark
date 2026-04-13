@@ -29,6 +29,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -273,20 +274,24 @@ public final class LanceRuntime {
       Map<String, String> namespaceProperties,
       List<String> tableId) {
     Map<String, String> merged = mergeStorageOptions(storageOptions, initialStorageOptions);
-    LanceNamespaceStorageOptionsProvider provider =
-        getOrCreateStorageOptionsProvider(namespaceImpl, namespaceProperties, tableId);
+    LanceNamespace namespace = getOrCreateNamespace(namespaceImpl, namespaceProperties);
 
-    ReadOptions.Builder builder =
+    ReadOptions.Builder roBuilder =
         new ReadOptions.Builder().setStorageOptions(merged).setSession(session(catalogName));
 
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
     if (version != null) {
-      builder.setVersion(version);
+      roBuilder.setVersion(version);
     }
 
-    return Dataset.open().allocator(allocator()).uri(uri).readOptions(builder.build()).build();
+    if (namespace != null && tableId != null) {
+      return Dataset.open()
+          .allocator(allocator())
+          .namespaceClient(namespace)
+          .tableId(tableId)
+          .readOptions(roBuilder.build())
+          .build();
+    }
+    return Dataset.open().allocator(allocator()).uri(uri).readOptions(roBuilder.build()).build();
   }
 
   /**

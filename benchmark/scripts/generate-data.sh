@@ -42,14 +42,19 @@ echo "Spark master:    ${SPARK_MASTER}"
 echo "Spark version:   ${SPARK_VERSION}"
 echo "Scala version:   ${SCALA_VERSION}"
 echo "Data dir:        ${DATA_DIR}"
+if [ -n "${FILE_FORMAT_VERSION:-}" ]; then
+  echo "File format version: ${FILE_FORMAT_VERSION}"
+fi
 echo ""
 
 # Step 1: Build benchmark jar if needed
-BENCHMARK_JAR="${BENCHMARK_DIR}/target/lance-spark-benchmark-0.3.0-beta.1.jar"
+BENCHMARK_JAR="${BENCHMARK_DIR}/target/lance-spark-benchmark.jar"
 if [ ! -f "${BENCHMARK_JAR}" ]; then
-  echo "--- Building benchmark jar ---"
+  echo "--- Building benchmark jar (Spark ${SPARK_VERSION}, Scala ${SCALA_VERSION}) ---"
   cd "${BENCHMARK_DIR}"
-  mvn package -DskipTests -q
+  ../mvnw  package -DskipTests -q \
+    -Dspark.compat.version="${SPARK_VERSION}" \
+    -Dscala.compat.version="${SCALA_VERSION}"
   cd "${SCRIPT_DIR}"
 fi
 
@@ -80,7 +85,7 @@ ${SPARK_SUBMIT} \
   "${BENCHMARK_JAR}" \
   --data-dir "${DATA_DIR}" \
   --scale-factor "${SCALE_FACTOR}" \
-  --formats "${FORMATS}"
+  --formats "${FORMATS}"${FILE_FORMAT_VERSION:+ --file-format-version "${FILE_FORMAT_VERSION}"}
 
 echo ""
 echo "=== Data generation complete ==="

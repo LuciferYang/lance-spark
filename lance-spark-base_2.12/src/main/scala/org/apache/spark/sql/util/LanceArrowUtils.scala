@@ -31,7 +31,7 @@ import org.apache.spark.sql.types._
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.JsonAST.{JObject, JString}
 import org.lance.spark.LanceConstant
-import org.lance.spark.utils.{BlobUtils, LargeVarCharUtils, VectorUtils}
+import org.lance.spark.utils.{BlobUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -40,6 +40,7 @@ import scala.collection.JavaConverters._
 
 object LanceArrowUtils {
   val ARROW_FIXED_SIZE_LIST_SIZE_KEY = VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY
+  val ARROW_FLOAT16_KEY = Float16Utils.ARROW_FLOAT16_KEY
   val ENCODING_BLOB = BlobUtils.LANCE_ENCODING_BLOB_KEY
   val ARROW_LARGE_VAR_CHAR_KEY = LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY
 
@@ -128,6 +129,10 @@ object LanceArrowUtils {
           fromArrowField(keyField),
           fromArrowField(valueField),
           valueField.isNullable)
+      case fp: ArrowType.FloatingPoint
+          if fp.getPrecision == FloatingPointPrecision.HALF =>
+        // Widen float16 to float32 for Spark (Spark has no native float16 type)
+        FloatType
       case _ => ArrowUtils.fromArrowField(field)
     }
   }
@@ -138,9 +143,12 @@ object LanceArrowUtils {
       // Preserve type information in metadata for types that need special handling on write
       val metadata = field.getType match {
         case fixedSizeList: ArrowType.FixedSizeList =>
-          new MetadataBuilder()
+          val builder = new MetadataBuilder()
             .putLong(ARROW_FIXED_SIZE_LIST_SIZE_KEY, fixedSizeList.getListSize)
-            .build()
+          if (Float16Utils.isFloat16ArrowField(field)) {
+            builder.putString(ARROW_FLOAT16_KEY, "true")
+          }
+          builder.build()
         case _: ArrowType.LargeUtf8 =>
           // Preserve LargeUtf8 type info so subsequent writes use LargeVarCharVector
           new MetadataBuilder()
@@ -157,13 +165,22 @@ object LanceArrowUtils {
       schema: StructType,
       timeZoneId: String,
       errorOnDuplicatedFieldNames: Boolean): Schema = {
+    toArrowSchema(schema, timeZoneId, errorOnDuplicatedFieldNames, largeVarTypes = false)
+  }
+
+  def toArrowSchema(
+      schema: StructType,
+      timeZoneId: String,
+      errorOnDuplicatedFieldNames: Boolean,
+      largeVarTypes: Boolean): Schema = {
     new Schema(schema.map { field =>
       toArrowField(
         field.name,
         deduplicateFieldNames(field.dataType, errorOnDuplicatedFieldNames),
         field.nullable,
         timeZoneId,
-        field.metadata)
+        field.metadata,
+        largeVarTypes)
     }.asJava)
   }
 
@@ -172,8 +189,9 @@ object LanceArrowUtils {
       dt: DataType,
       nullable: Boolean,
       timeZoneId: String,
-      metadata: org.apache.spark.sql.types.Metadata = null): Field = {
-    var large: Boolean = false
+      metadata: org.apache.spark.sql.types.Metadata = null,
+      largeVarTypes: Boolean = false): Field = {
+    var large: Boolean = largeVarTypes
     var meta: Map[String, String] = Map.empty
 
     if (metadata != null) {
@@ -198,18 +216,45 @@ object LanceArrowUtils {
           val listSize = metadata.getLong(ARROW_FIXED_SIZE_LIST_SIZE_KEY).toInt
           val fieldType =
             new FieldType(nullable, new ArrowType.FixedSizeList(listSize), null, meta.asJava)
+          // Check if float16 metadata is set
+          val isFloat16 = Float16Utils.hasFloat16Metadata(metadata)
+          val elementField = if (isFloat16) {
+            if (!Float16Utils.isFloat2VectorAvailable) {
+              throw new UnsupportedOperationException(
+                "Float16 vectors require Arrow 18+ (Spark 4.0+). " +
+                  "Current Arrow version does not support Float2Vector.")
+            }
+            new Field(
+              "element",
+              new FieldType(
+                containsNull,
+                new ArrowType.FloatingPoint(FloatingPointPrecision.HALF),
+                null),
+              Seq.empty[Field].asJava)
+          } else {
+            toArrowField(
+              "element",
+              elementType,
+              containsNull,
+              timeZoneId,
+              largeVarTypes = largeVarTypes)
+          }
           new Field(
             name,
             fieldType,
-            Seq(
-              toArrowField("element", elementType, containsNull, timeZoneId)).asJava)
+            Seq(elementField).asJava)
         } else {
           val fieldType = new FieldType(nullable, ArrowType.List.INSTANCE, null, meta.asJava)
           new Field(
             name,
             fieldType,
             Seq(
-              toArrowField("element", elementType, containsNull, timeZoneId)).asJava)
+              toArrowField(
+                "element",
+                elementType,
+                containsNull,
+                timeZoneId,
+                largeVarTypes = largeVarTypes)).asJava)
         }
       case StructType(fields) =>
         val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null, meta.asJava)
@@ -217,7 +262,13 @@ object LanceArrowUtils {
           name,
           fieldType,
           fields.map { field =>
-            toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
+            toArrowField(
+              field.name,
+              field.dataType,
+              field.nullable,
+              timeZoneId,
+              field.metadata,
+              largeVarTypes)
           }.toSeq.asJava)
       case MapType(keyType, valueType, valueContainsNull) =>
         val mapType = new FieldType(nullable, new ArrowType.Map(false), null, meta.asJava)
@@ -231,9 +282,10 @@ object LanceArrowUtils {
               .add(MapVector.KEY_NAME, keyType, nullable = false)
               .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull),
             nullable = false,
-            timeZoneId)).asJava)
+            timeZoneId,
+            largeVarTypes = largeVarTypes)).asJava)
       case udt: UserDefinedType[_] =>
-        toArrowField(name, udt.sqlType, nullable, timeZoneId)
+        toArrowField(name, udt.sqlType, nullable, timeZoneId, largeVarTypes = largeVarTypes)
       case dataType =>
         val fieldType =
           new FieldType(nullable, toArrowType(dataType, timeZoneId, large, name), null, meta.asJava)

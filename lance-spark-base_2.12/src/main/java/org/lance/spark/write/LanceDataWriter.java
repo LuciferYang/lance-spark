@@ -16,7 +16,6 @@ package org.lance.spark.write;
 import org.lance.Fragment;
 import org.lance.FragmentMetadata;
 import org.lance.WriteParams;
-import org.lance.io.StorageOptionsProvider;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkWriteOptions;
 
@@ -133,21 +132,20 @@ public class LanceDataWriter implements DataWriter<InternalRow> {
     public DataWriter<InternalRow> createWriter(int partitionId, long taskId) {
       int batchSize = writeOptions.getBatchSize();
       boolean useQueuedBuffer = writeOptions.isUseQueuedWriteBuffer();
+      boolean useLargeVarTypes = writeOptions.isUseLargeVarTypes();
 
       // Merge initial storage options with write options
-      WriteParams params = buildWriteParams();
+      WriteParams params = writeOptions.toWriteParams(initialStorageOptions);
 
       // Select buffer type based on configuration
       ArrowBatchWriteBuffer writeBuffer;
       if (useQueuedBuffer) {
         int queueDepth = writeOptions.getQueueDepth();
-        writeBuffer = new QueuedArrowBatchWriteBuffer(schema, batchSize, queueDepth);
+        writeBuffer =
+            new QueuedArrowBatchWriteBuffer(schema, batchSize, queueDepth, useLargeVarTypes);
       } else {
-        writeBuffer = new SemaphoreArrowBatchWriteBuffer(schema, batchSize);
+        writeBuffer = new SemaphoreArrowBatchWriteBuffer(schema, batchSize, useLargeVarTypes);
       }
-
-      // Get storage options provider for credential refresh
-      StorageOptionsProvider storageOptionsProvider = getStorageOptionsProvider();
 
       // Create fragment in background thread
       Callable<List<FragmentMetadata>> fragmentCreator =
@@ -155,8 +153,7 @@ public class LanceDataWriter implements DataWriter<InternalRow> {
             try (ArrowArrayStream arrowStream =
                 ArrowArrayStream.allocateNew(LanceRuntime.allocator())) {
               Data.exportArrayStream(LanceRuntime.allocator(), writeBuffer, arrowStream);
-              return Fragment.create(
-                  writeOptions.getDatasetUri(), arrowStream, params, storageOptionsProvider);
+              return Fragment.create(writeOptions.getDatasetUri(), arrowStream, params);
             }
           };
       FutureTask<List<FragmentMetadata>> fragmentCreationTask =
@@ -165,33 +162,6 @@ public class LanceDataWriter implements DataWriter<InternalRow> {
       fragmentCreationThread.start();
 
       return new LanceDataWriter(writeBuffer, fragmentCreationTask, fragmentCreationThread);
-    }
-
-    private WriteParams buildWriteParams() {
-      Map<String, String> merged =
-          LanceRuntime.mergeStorageOptions(writeOptions.getStorageOptions(), initialStorageOptions);
-
-      WriteParams.Builder builder = new WriteParams.Builder();
-      builder.withMode(writeOptions.getWriteMode());
-      if (writeOptions.getMaxRowsPerFile() != null) {
-        builder.withMaxRowsPerFile(writeOptions.getMaxRowsPerFile());
-      }
-      if (writeOptions.getMaxRowsPerGroup() != null) {
-        builder.withMaxRowsPerGroup(writeOptions.getMaxRowsPerGroup());
-      }
-      if (writeOptions.getMaxBytesPerFile() != null) {
-        builder.withMaxBytesPerFile(writeOptions.getMaxBytesPerFile());
-      }
-      if (writeOptions.getDataStorageVersion() != null) {
-        builder.withDataStorageVersion(writeOptions.getDataStorageVersion());
-      }
-      builder.withStorageOptions(merged);
-      return builder.build();
-    }
-
-    private StorageOptionsProvider getStorageOptionsProvider() {
-      return LanceRuntime.getOrCreateStorageOptionsProvider(
-          namespaceImpl, namespaceProperties, tableId);
     }
   }
 }

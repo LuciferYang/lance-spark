@@ -13,10 +13,8 @@
  */
 package org.lance.spark;
 
-import org.lance.ReadOptions;
 import org.lance.WriteParams;
 import org.lance.WriteParams.WriteMode;
-import org.lance.io.StorageOptionsProvider;
 import org.lance.namespace.LanceNamespace;
 
 import com.google.common.base.Preconditions;
@@ -52,26 +50,33 @@ public class LanceSparkWriteOptions implements Serializable {
   public static final String CONFIG_MAX_ROWS_PER_FILE = "max_row_per_file";
   public static final String CONFIG_MAX_ROWS_PER_GROUP = "max_rows_per_group";
   public static final String CONFIG_MAX_BYTES_PER_FILE = "max_bytes_per_file";
-  public static final String CONFIG_DATA_STORAGE_VERSION = "data_storage_version";
+  public static final String CONFIG_FILE_FORMAT_VERSION = "file_format_version";
   public static final String CONFIG_USE_QUEUED_WRITE_BUFFER = "use_queued_write_buffer";
   public static final String CONFIG_QUEUE_DEPTH = "queue_depth";
   public static final String CONFIG_BATCH_SIZE = "batch_size";
+  public static final String CONFIG_ENABLE_STABLE_ROW_IDS = "enable_stable_row_ids";
+  public static final String CONFIG_USE_LARGE_VAR_TYPES = "use_large_var_types";
 
   private static final WriteMode DEFAULT_WRITE_MODE = WriteMode.APPEND;
   private static final boolean DEFAULT_USE_QUEUED_WRITE_BUFFER = false;
   private static final int DEFAULT_QUEUE_DEPTH = 8;
   // Changed from 512 to 8192 for better write performance consistency with read path
   private static final int DEFAULT_BATCH_SIZE = 8192;
+  private static final boolean DEFAULT_USE_LARGE_VAR_TYPES = false;
 
   private final String datasetUri;
   private final WriteMode writeMode;
   private final Integer maxRowsPerFile;
   private final Integer maxRowsPerGroup;
   private final Long maxBytesPerFile;
-  private final String dataStorageVersion;
+  private final String fileFormatVersion;
   private final boolean useQueuedWriteBuffer;
   private final int queueDepth;
   private final int batchSize;
+  // Boxed so we can represent "unset" (null): when null, callers omit the flag and lance-core
+  // inherits from the manifest (e.g. append without re-specifying). Staged commit uses primitives.
+  private final Boolean enableStableRowIds;
+  private final boolean useLargeVarTypes;
   private final Map<String, String> storageOptions;
 
   /** The namespace for credential vending. Transient as LanceNamespace is not serializable. */
@@ -80,19 +85,25 @@ public class LanceSparkWriteOptions implements Serializable {
   /** The table identifier within the namespace, used for credential refresh. */
   private final List<String> tableId;
 
+  /** Use this version to open the dataset and apply write if set. */
+  private final Long version;
+
   private LanceSparkWriteOptions(Builder builder) {
     this.datasetUri = builder.datasetUri;
     this.writeMode = builder.writeMode;
     this.maxRowsPerFile = builder.maxRowsPerFile;
     this.maxRowsPerGroup = builder.maxRowsPerGroup;
     this.maxBytesPerFile = builder.maxBytesPerFile;
-    this.dataStorageVersion = builder.dataStorageVersion;
+    this.fileFormatVersion = builder.fileFormatVersion;
     this.useQueuedWriteBuffer = builder.useQueuedWriteBuffer;
     this.queueDepth = builder.queueDepth;
     this.batchSize = builder.batchSize;
+    this.enableStableRowIds = builder.enableStableRowIds;
+    this.useLargeVarTypes = builder.useLargeVarTypes;
     this.storageOptions = new HashMap<>(builder.storageOptions);
     this.namespace = builder.namespace;
     this.tableId = builder.tableId;
+    this.version = builder.version;
   }
 
   /** Creates a new builder for LanceSparkWriteOptions. */
@@ -143,8 +154,8 @@ public class LanceSparkWriteOptions implements Serializable {
     return maxBytesPerFile;
   }
 
-  public String getDataStorageVersion() {
-    return dataStorageVersion;
+  public String getFileFormatVersion() {
+    return fileFormatVersion;
   }
 
   public boolean isUseQueuedWriteBuffer() {
@@ -159,6 +170,15 @@ public class LanceSparkWriteOptions implements Serializable {
     return batchSize;
   }
 
+  /** Nullable when the write option was not specified (see field comment above). */
+  public Boolean getEnableStableRowIds() {
+    return enableStableRowIds;
+  }
+
+  public boolean isUseLargeVarTypes() {
+    return useLargeVarTypes;
+  }
+
   public Map<String, String> getStorageOptions() {
     return storageOptions;
   }
@@ -169,6 +189,33 @@ public class LanceSparkWriteOptions implements Serializable {
 
   public List<String> getTableId() {
     return tableId;
+  }
+
+  public Long getVersion() {
+    return version;
+  }
+
+  /** Returns a builder pre-populated with all fields from this instance. */
+  public Builder toBuilder() {
+    return builder()
+        .datasetUri(datasetUri)
+        .writeMode(writeMode)
+        .maxRowsPerFile(maxRowsPerFile)
+        .maxRowsPerGroup(maxRowsPerGroup)
+        .maxBytesPerFile(maxBytesPerFile)
+        .fileFormatVersion(fileFormatVersion)
+        .useQueuedWriteBuffer(useQueuedWriteBuffer)
+        .queueDepth(queueDepth)
+        .batchSize(batchSize)
+        .storageOptions(storageOptions)
+        .namespace(namespace)
+        .tableId(tableId)
+        .version(version);
+  }
+
+  /** Returns a copy of these options with version set to the given version. */
+  public LanceSparkWriteOptions withVersion(long version) {
+    return toBuilder().version(version).build();
   }
 
   public boolean hasNamespace() {
@@ -185,18 +232,6 @@ public class LanceSparkWriteOptions implements Serializable {
   }
 
   /**
-   * Creates a StorageOptionsProvider for dynamic credential refresh.
-   *
-   * @return a StorageOptionsProvider if namespace is configured, null otherwise
-   */
-  public org.lance.io.StorageOptionsProvider getStorageOptionsProvider() {
-    if (namespace != null && tableId != null) {
-      return new org.lance.namespace.LanceNamespaceStorageOptionsProvider(namespace, tableId);
-    }
-    return null;
-  }
-
-  /**
    * Returns whether the write mode is overwrite.
    *
    * @return true if write mode is OVERWRITE
@@ -206,47 +241,20 @@ public class LanceSparkWriteOptions implements Serializable {
   }
 
   /**
-   * Converts this to Lance ReadOptions for opening existing datasets.
-   *
-   * @return ReadOptions with storage options, session, and credential provider
-   */
-  public ReadOptions toReadOptions() {
-    ReadOptions.Builder builder =
-        new ReadOptions.Builder()
-            .setStorageOptions(storageOptions)
-            .setSession(LanceRuntime.session());
-    StorageOptionsProvider provider = getStorageOptionsProvider();
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
-    return builder.build();
-  }
-
-  /**
-   * Converts this to Lance ReadOptions for worker-side operations with credential refresh.
-   *
-   * @param initialStorageOptions initial storage options from describeTable on the driver
-   * @param provider a StorageOptionsProvider for dynamic credential refresh, or null
-   * @return ReadOptions with merged storage options, session, and credential provider
-   */
-  public ReadOptions toReadOptions(
-      Map<String, String> initialStorageOptions, StorageOptionsProvider provider) {
-    Map<String, String> merged =
-        LanceRuntime.mergeStorageOptions(storageOptions, initialStorageOptions);
-    ReadOptions.Builder builder =
-        new ReadOptions.Builder().setStorageOptions(merged).setSession(LanceRuntime.session());
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
-    return builder.build();
-  }
-
-  /**
    * Converts this to Lance WriteParams for the native library.
    *
    * @return WriteParams for the Lance native library
    */
   public WriteParams toWriteParams() {
+    return toWriteParams(null);
+  }
+
+  /**
+   * Converts this to Lance {@link WriteParams}, merging driver-side {@code initialStorageOptions}
+   * into the base storage options. Pass {@code null} for driver-side callers that do not have
+   * describeTable() credentials.
+   */
+  public WriteParams toWriteParams(Map<String, String> initialStorageOptions) {
     WriteParams.Builder builder = new WriteParams.Builder();
     builder.withMode(writeMode);
     if (maxRowsPerFile != null) {
@@ -258,11 +266,16 @@ public class LanceSparkWriteOptions implements Serializable {
     if (maxBytesPerFile != null) {
       builder.withMaxBytesPerFile(maxBytesPerFile);
     }
-    if (dataStorageVersion != null) {
-      builder.withDataStorageVersion(dataStorageVersion);
+    if (fileFormatVersion != null) {
+      builder.withDataStorageVersion(fileFormatVersion);
     }
-    if (!storageOptions.isEmpty()) {
-      builder.withStorageOptions(storageOptions);
+    if (enableStableRowIds != null) {
+      builder.withEnableStableRowIds(enableStableRowIds);
+    }
+    Map<String, String> merged =
+        LanceRuntime.mergeStorageOptions(storageOptions, initialStorageOptions);
+    if (!merged.isEmpty()) {
+      builder.withStorageOptions(merged);
     }
     return builder.build();
   }
@@ -274,14 +287,17 @@ public class LanceSparkWriteOptions implements Serializable {
     return useQueuedWriteBuffer == that.useQueuedWriteBuffer
         && queueDepth == that.queueDepth
         && batchSize == that.batchSize
+        && useLargeVarTypes == that.useLargeVarTypes
         && Objects.equals(datasetUri, that.datasetUri)
         && writeMode == that.writeMode
         && Objects.equals(maxRowsPerFile, that.maxRowsPerFile)
         && Objects.equals(maxRowsPerGroup, that.maxRowsPerGroup)
         && Objects.equals(maxBytesPerFile, that.maxBytesPerFile)
-        && dataStorageVersion == that.dataStorageVersion
+        && Objects.equals(fileFormatVersion, that.fileFormatVersion)
+        && Objects.equals(enableStableRowIds, that.enableStableRowIds)
         && Objects.equals(storageOptions, that.storageOptions)
-        && Objects.equals(tableId, that.tableId);
+        && Objects.equals(tableId, that.tableId)
+        && Objects.equals(version, that.version);
   }
 
   @Override
@@ -292,12 +308,15 @@ public class LanceSparkWriteOptions implements Serializable {
         maxRowsPerFile,
         maxRowsPerGroup,
         maxBytesPerFile,
-        dataStorageVersion,
+        fileFormatVersion,
         useQueuedWriteBuffer,
         queueDepth,
         batchSize,
+        enableStableRowIds,
+        useLargeVarTypes,
         storageOptions,
-        tableId);
+        tableId,
+        version);
   }
 
   /** Builder for creating LanceSparkWriteOptions instances. */
@@ -307,13 +326,16 @@ public class LanceSparkWriteOptions implements Serializable {
     private Integer maxRowsPerFile;
     private Integer maxRowsPerGroup;
     private Long maxBytesPerFile;
-    private String dataStorageVersion;
+    private String fileFormatVersion;
     private boolean useQueuedWriteBuffer = DEFAULT_USE_QUEUED_WRITE_BUFFER;
     private int queueDepth = DEFAULT_QUEUE_DEPTH;
     private int batchSize = DEFAULT_BATCH_SIZE;
+    private Boolean enableStableRowIds;
+    private boolean useLargeVarTypes = DEFAULT_USE_LARGE_VAR_TYPES;
     private Map<String, String> storageOptions = new HashMap<>();
     private LanceNamespace namespace;
     private List<String> tableId;
+    private Long version;
 
     private Builder() {}
 
@@ -342,8 +364,8 @@ public class LanceSparkWriteOptions implements Serializable {
       return this;
     }
 
-    public Builder dataStorageVersion(String dataStorageVersion) {
-      this.dataStorageVersion = dataStorageVersion;
+    public Builder fileFormatVersion(String fileFormatVersion) {
+      this.fileFormatVersion = fileFormatVersion;
       return this;
     }
 
@@ -362,6 +384,16 @@ public class LanceSparkWriteOptions implements Serializable {
       return this;
     }
 
+    public Builder enableStableRowIds(Boolean enableStableRowIds) {
+      this.enableStableRowIds = enableStableRowIds;
+      return this;
+    }
+
+    public Builder useLargeVarTypes(boolean useLargeVarTypes) {
+      this.useLargeVarTypes = useLargeVarTypes;
+      return this;
+    }
+
     public Builder storageOptions(Map<String, String> storageOptions) {
       this.storageOptions = new HashMap<>(storageOptions);
       return this;
@@ -374,6 +406,12 @@ public class LanceSparkWriteOptions implements Serializable {
 
     public Builder tableId(List<String> tableId) {
       this.tableId = tableId;
+      return this;
+    }
+
+    /** Pin opens to this dataset manifest version. */
+    public Builder version(Long version) {
+      this.version = version;
       return this;
     }
 
@@ -397,8 +435,8 @@ public class LanceSparkWriteOptions implements Serializable {
       if (options.containsKey(CONFIG_MAX_BYTES_PER_FILE)) {
         this.maxBytesPerFile = Long.parseLong(options.get(CONFIG_MAX_BYTES_PER_FILE));
       }
-      if (options.containsKey(CONFIG_DATA_STORAGE_VERSION)) {
-        this.dataStorageVersion = options.get(CONFIG_DATA_STORAGE_VERSION);
+      if (options.containsKey(CONFIG_FILE_FORMAT_VERSION)) {
+        this.fileFormatVersion = options.get(CONFIG_FILE_FORMAT_VERSION);
       }
       if (options.containsKey(CONFIG_USE_QUEUED_WRITE_BUFFER)) {
         this.useQueuedWriteBuffer =
@@ -411,6 +449,12 @@ public class LanceSparkWriteOptions implements Serializable {
         int parsedBatchSize = Integer.parseInt(options.get(CONFIG_BATCH_SIZE));
         Preconditions.checkArgument(parsedBatchSize > 0, "batch_size must be positive");
         this.batchSize = parsedBatchSize;
+      }
+      if (options.containsKey(CONFIG_ENABLE_STABLE_ROW_IDS)) {
+        this.enableStableRowIds = Boolean.parseBoolean(options.get(CONFIG_ENABLE_STABLE_ROW_IDS));
+      }
+      if (options.containsKey(CONFIG_USE_LARGE_VAR_TYPES)) {
+        this.useLargeVarTypes = Boolean.parseBoolean(options.get(CONFIG_USE_LARGE_VAR_TYPES));
       }
       return this;
     }

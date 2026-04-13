@@ -14,14 +14,15 @@
 package org.lance.spark;
 
 import org.lance.ReadOptions;
-import org.lance.io.StorageOptionsProvider;
 import org.lance.ipc.Query;
 import org.lance.namespace.LanceNamespace;
-import org.lance.namespace.LanceNamespaceStorageOptionsProvider;
 import org.lance.spark.utils.QueryUtils;
 
 import com.google.common.base.Preconditions;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.List;
@@ -74,7 +75,7 @@ public class LanceSparkReadOptions implements Serializable {
   private final Integer indexCacheSize;
   private final Integer metadataCacheSize;
   private final int batchSize;
-  private final Query nearest;
+  private transient Query nearest;
   private final boolean topNPushDown;
   private final Map<String, String> storageOptions;
 
@@ -278,18 +279,6 @@ public class LanceSparkReadOptions implements Serializable {
   }
 
   /**
-   * Creates a StorageOptionsProvider for dynamic credential refresh.
-   *
-   * @return a StorageOptionsProvider if namespace is configured, null otherwise
-   */
-  public StorageOptionsProvider getStorageOptionsProvider() {
-    if (namespace != null && tableId != null) {
-      return new LanceNamespaceStorageOptionsProvider(namespace, tableId);
-    }
-    return null;
-  }
-
-  /**
    * Converts this to Lance ReadOptions for the native library.
    *
    * @return ReadOptions for the Lance native library
@@ -312,11 +301,18 @@ public class LanceSparkReadOptions implements Serializable {
     if (!storageOptions.isEmpty()) {
       builder.setStorageOptions(storageOptions);
     }
-    StorageOptionsProvider provider = getStorageOptionsProvider();
-    if (provider != null) {
-      builder.setStorageOptionsProvider(provider);
-    }
     return builder.build();
+  }
+
+  private void writeObject(ObjectOutputStream out) throws IOException {
+    out.defaultWriteObject();
+    out.writeObject(QueryUtils.queryToString(nearest));
+  }
+
+  private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+    in.defaultReadObject();
+    String json = (String) in.readObject();
+    this.nearest = QueryUtils.stringToQuery(json);
   }
 
   @Override
@@ -328,6 +324,7 @@ public class LanceSparkReadOptions implements Serializable {
     return pushDownFilters == that.pushDownFilters
         && batchSize == that.batchSize
         && topNPushDown == that.topNPushDown
+        && Objects.equals(nearest, that.nearest)
         && Objects.equals(datasetUri, that.datasetUri)
         && Objects.equals(blockSize, that.blockSize)
         && Objects.equals(version, that.version)
@@ -347,6 +344,7 @@ public class LanceSparkReadOptions implements Serializable {
         indexCacheSize,
         metadataCacheSize,
         batchSize,
+        nearest,
         topNPushDown,
         storageOptions,
         tableId);

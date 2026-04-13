@@ -18,6 +18,7 @@ import org.lance.ipc.LanceScanner;
 import org.lance.ipc.ScanOptions;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
+import org.lance.spark.utils.Utils;
 import org.lance.spark.vectorized.LanceArrowColumnVector;
 
 import com.google.common.collect.Lists;
@@ -63,7 +64,10 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
     LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
     long totalCount = 0;
 
-    try (Dataset dataset = openDataset(readOptions)) {
+    try (Dataset dataset =
+        Utils.openDatasetBuilder(readOptions)
+            .initialStorageOptions(inputPartition.getInitialStorageOptions())
+            .build()) {
       List<Integer> fragmentIds = inputPartition.getLanceSplit().getFragments();
       if (fragmentIds.isEmpty()) {
         return 0;
@@ -90,34 +94,26 @@ public class LanceCountStarPartitionReader implements PartitionReader<ColumnarBa
     return totalCount;
   }
 
-  private Dataset openDataset(LanceSparkReadOptions readOptions) {
-    return LanceRuntime.openDataset(
-        readOptions.getDatasetUri(),
-        readOptions.getCatalogName(),
-        readOptions.getVersion() != null ? (long) readOptions.getVersion() : null,
-        readOptions.getStorageOptions(),
-        inputPartition.getInitialStorageOptions(),
-        inputPartition.getNamespaceImpl(),
-        inputPartition.getNamespaceProperties(),
-        readOptions.getTableId());
-  }
-
   private ColumnarBatch createCountResultBatch(long count, StructType resultSchema) {
     VectorSchemaRoot root =
         VectorSchemaRoot.create(
             LanceArrowUtils.toArrowSchema(resultSchema, "UTC", false), allocator);
+    try {
+      root.allocateNew();
+      BigIntVector countVector = (BigIntVector) root.getVector("count");
+      countVector.setSafe(0, count);
+      root.setRowCount(1);
 
-    root.allocateNew();
-    BigIntVector countVector = (BigIntVector) root.getVector("count");
-    countVector.setSafe(0, count);
-    root.setRowCount(1);
+      LanceArrowColumnVector[] columns =
+          root.getFieldVectors().stream()
+              .map(LanceArrowColumnVector::new)
+              .toArray(LanceArrowColumnVector[]::new);
 
-    LanceArrowColumnVector[] columns =
-        root.getFieldVectors().stream()
-            .map(LanceArrowColumnVector::new)
-            .toArray(LanceArrowColumnVector[]::new);
-
-    return new ColumnarBatch(columns, 1);
+      return new ColumnarBatch(columns, 1);
+    } catch (Exception e) {
+      root.close();
+      throw e;
+    }
   }
 
   @Override

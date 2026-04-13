@@ -74,6 +74,10 @@ clean-module:
 bundle:
 	./mvnw install -pl $(BUNDLE_MODULE) -am -DskipTests
 
+.PHONY: clean-bundle
+clean-bundle:
+	./mvnw clean install -pl $(BUNDLE_MODULE) -am -DskipTests
+
 .PHONY: install-base
 install-base:
 	./mvnw install -pl $(BASE_MODULE) -am -DskipTests
@@ -119,9 +123,7 @@ clean:
 docker-build:
 	@ls $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar >/dev/null 2>&1 || \
 		(echo "Error: Bundle jar not found. Run 'make bundle' first." && exit 1)
-	rm -f docker/lance-spark-bundle-*.jar
-	cp $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar docker/
-	cd docker && $(DOCKER_COMPOSE) build --no-cache \
+	$(DOCKER_COMPOSE) -f docker/docker-compose.yml build --no-cache \
 		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
 		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
 		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
@@ -130,7 +132,7 @@ docker-build:
 
 .PHONY: docker-up
 docker-up: check-docker-compose
-	cd docker && ${DOCKER_COMPOSE} up -d
+	${DOCKER_COMPOSE} -f docker/docker-compose.yml up -d
 
 .PHONY: docker-shell
 docker-shell:
@@ -138,7 +140,7 @@ docker-shell:
 
 .PHONY: docker-down
 docker-down: check-docker-compose
-	cd docker && ${DOCKER_COMPOSE} down
+	${DOCKER_COMPOSE} -f docker/docker-compose.yml down
 
 # Print resolved Docker build args for use in CI (e.g. GitHub Actions step outputs).
 # This keeps versions.mk as the single source of truth for version mappings.
@@ -167,30 +169,13 @@ docker-build-test-base:
 docker-build-test:
 	@ls $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar >/dev/null 2>&1 || \
 		(echo "Error: Bundle jar not found. Run 'make bundle' first." && exit 1)
-	rm -f docker/lance-spark-bundle-*.jar
-	cp $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar docker/
-	cd docker && docker build --no-cache \
+	docker build --no-cache \
 		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
 		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
-		-f Dockerfile.test \
+		-f docker/Dockerfile.test \
 		-t lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION) \
 		.
 
-.PHONY: docker-build-test-full
-docker-build-test-full:
-	@ls $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar >/dev/null 2>&1 || \
-		(echo "Error: Bundle jar not found. Run 'make bundle' first." && exit 1)
-	rm -f docker/lance-spark-bundle-*.jar
-	cp $(BUNDLE_MODULE)/target/$(BUNDLE_MODULE)-*.jar docker/
-	cd docker && docker build \
-		--build-arg SPARK_DOWNLOAD_VERSION=$(SPARK_DOWNLOAD_VERSION) \
-		--build-arg SPARK_MAJOR_VERSION=$(SPARK_VERSION) \
-		--build-arg SCALA_VERSION=$(SCALA_VERSION) \
-		--build-arg PY4J_VERSION=$(PY4J_VERSION) \
-		--build-arg SPARK_SCALA_SUFFIX=$(SPARK_SCALA_SUFFIX) \
-		-f Dockerfile.test-full \
-		-t lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION) \
-		.
 
 .PHONY: docker-test
 docker-test:
@@ -198,6 +183,11 @@ docker-test:
 		(echo "Error: Docker image 'lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION)' not found. Run 'make docker-build-test' first." && exit 1)
 	docker run --rm --hostname lance-spark \
 		-e SPARK_VERSION=$(SPARK_VERSION) \
+		$(if $(LANCEDB_DB),-e LANCEDB_DB=$(LANCEDB_DB)) \
+		$(if $(LANCEDB_API_KEY),-e LANCEDB_API_KEY=$(LANCEDB_API_KEY)) \
+		$(if $(LANCEDB_HOST_OVERRIDE),-e LANCEDB_HOST_OVERRIDE=$(LANCEDB_HOST_OVERRIDE)) \
+		$(if $(LANCEDB_REGION),-e LANCEDB_REGION=$(LANCEDB_REGION)) \
+		$(if $(TEST_BACKENDS),-e TEST_BACKENDS=$(TEST_BACKENDS)) \
 		lance-spark-test:$(SPARK_VERSION)_$(SCALA_VERSION) \
 		"pytest /home/lance/tests/ -v --timeout=180"
 
@@ -207,15 +197,21 @@ docker-test:
 
 .PHONY: benchmark-build
 benchmark-build:
-	cd benchmark && mvn package -DskipTests
+	cd benchmark && ../mvnw package -DskipTests \
+		-Dspark.compat.version=$(SPARK_VERSION) \
+		-Dscala.compat.version=$(SCALA_VERSION)
 
 .PHONY: benchmark-generate
 benchmark-generate:
-	cd benchmark && DATA_DIR=$(DATA_DIR) ./scripts/generate-data.sh $(SF) $(FORMATS) $(SPARK_MASTER)
+	cd benchmark && \
+		SPARK_VERSION=$(SPARK_VERSION) SCALA_VERSION=$(SCALA_VERSION) \
+		./scripts/generate-data.sh $(SF) $(FORMATS) $(SPARK_MASTER)
 
 .PHONY: benchmark-run
 benchmark-run:
-	cd benchmark && DATA_DIR=$(DATA_DIR) ./scripts/run-benchmark.sh $(FORMATS) $(SPARK_MASTER) $(ITERATIONS)
+	cd benchmark && \
+		SPARK_VERSION=$(SPARK_VERSION) SCALA_VERSION=$(SCALA_VERSION) \
+		./scripts/run-benchmark.sh $(FORMATS) $(SPARK_MASTER) $(ITERATIONS)
 
 .PHONY: benchmark
 benchmark: benchmark-generate benchmark-run
@@ -224,7 +220,6 @@ SF ?= 1
 FORMATS ?= lance,parquet
 SPARK_MASTER ?= local[*]
 ITERATIONS ?= 3
-DATA_DIR ?= benchmark/data
 
 # =============================================================================
 # Documentation
@@ -250,7 +245,8 @@ help:
 	@echo "  test           - Run tests for module"
 	@echo "  build          - Lint and install module"
 	@echo "  clean-module   - Clean module"
-	@echo "  bundle         - Build bundle module"
+	@echo "  bundle         - Build bundle module (incremental)"
+	@echo "  clean-bundle   - Clean then build bundle module (use when source changes are not picked up)"
 	@echo "  install-base   - Install base module"
 	@echo ""
 	@echo "Global commands (all modules):"
@@ -268,7 +264,6 @@ help:
 	@echo "  docker-down            - Stop docker containers"
 	@echo "  docker-build-test-base - Build test base image (system deps + Spark)"
 	@echo "  docker-build-test      - Build test image (base + bundle JAR)"
-	@echo "  docker-build-test-full - Build test image (single-stage, with Spark and bundle)"
 	@echo "  docker-test            - Run integration tests in lance-spark-test container"
 	@echo ""
 	@echo "Benchmark:"

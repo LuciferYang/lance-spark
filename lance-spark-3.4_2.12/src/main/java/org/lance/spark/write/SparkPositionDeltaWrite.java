@@ -17,11 +17,9 @@ import org.lance.CommitBuilder;
 import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.FragmentMetadata;
-import org.lance.ReadOptions;
 import org.lance.RowAddress;
 import org.lance.Transaction;
 import org.lance.WriteParams;
-import org.lance.io.StorageOptionsProvider;
 import org.lance.operation.Update;
 import org.lance.spark.LanceConstant;
 import org.lance.spark.LanceRuntime;
@@ -50,6 +48,8 @@ import org.apache.spark.sql.connector.write.RequiresDistributionAndOrdering;
 import org.apache.spark.sql.connector.write.WriterCommitMessage;
 import org.apache.spark.sql.types.StructType;
 import org.roaringbitmap.RoaringBitmap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -58,10 +58,13 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.FutureTask;
 
 public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistributionAndOrdering {
+  private static final Logger logger = LoggerFactory.getLogger(SparkPositionDeltaWrite.class);
+
   private final StructType sparkSchema;
   private final LanceSparkWriteOptions writeOptions;
 
@@ -85,7 +88,11 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
       Map<String, String> namespaceProperties,
       List<String> tableId) {
     this.sparkSchema = sparkSchema;
-    this.writeOptions = writeOptions;
+    try (Dataset ds = Utils.openDatasetBuilder(writeOptions).build()) {
+      this.writeOptions = writeOptions.withVersion(ds.version());
+      logger.debug(
+          "Resolved dataset version for position delta write: {}", this.writeOptions.getVersion());
+    }
     this.initialStorageOptions = initialStorageOptions;
     this.namespaceImpl = namespaceImpl;
     this.namespaceProperties = namespaceProperties;
@@ -144,7 +151,11 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
               });
 
       // Use SDK directly to update fragments
-      try (Dataset dataset = Utils.openDataset(writeOptions)) {
+      long version =
+          Objects.requireNonNull(
+              writeOptions.getVersion(),
+              "version must be set (resolved in SparkPositionDeltaWrite constructor)");
+      try (Dataset dataset = Utils.openDatasetBuilder(writeOptions).build()) {
         Update update =
             Update.builder()
                 .removedFragmentIds(removedFragmentIds)
@@ -153,7 +164,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
                 .build();
 
         try (Transaction txn =
-                new Transaction.Builder().readVersion(dataset.version()).operation(update).build();
+                new Transaction.Builder().readVersion(version).operation(update).build();
             Dataset committed =
                 new CommitBuilder(dataset)
                     .writeParams(writeOptions.getStorageOptions())
@@ -202,21 +213,20 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
     public DeltaWriter<InternalRow> createWriter(int partitionId, long taskId) {
       int batchSize = writeOptions.getBatchSize();
       boolean useQueuedBuffer = writeOptions.isUseQueuedWriteBuffer();
+      boolean useLargeVarTypes = writeOptions.isUseLargeVarTypes();
 
       // Merge initial storage options with write options
-      WriteParams params = buildWriteParams();
+      WriteParams params = writeOptions.toWriteParams(initialStorageOptions);
 
       // Select buffer type based on configuration
       ArrowBatchWriteBuffer writeBuffer;
       if (useQueuedBuffer) {
         int queueDepth = writeOptions.getQueueDepth();
-        writeBuffer = new QueuedArrowBatchWriteBuffer(sparkSchema, batchSize, queueDepth);
+        writeBuffer =
+            new QueuedArrowBatchWriteBuffer(sparkSchema, batchSize, queueDepth, useLargeVarTypes);
       } else {
-        writeBuffer = new SemaphoreArrowBatchWriteBuffer(sparkSchema, batchSize);
+        writeBuffer = new SemaphoreArrowBatchWriteBuffer(sparkSchema, batchSize, useLargeVarTypes);
       }
-
-      // Get storage options provider for credential refresh
-      StorageOptionsProvider storageOptionsProvider = getStorageOptionsProvider();
 
       // Create fragment in background thread
       Callable<List<FragmentMetadata>> fragmentCreator =
@@ -224,8 +234,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
             try (ArrowArrayStream arrowStream =
                 ArrowArrayStream.allocateNew(LanceRuntime.allocator())) {
               Data.exportArrayStream(LanceRuntime.allocator(), writeBuffer, arrowStream);
-              return Fragment.create(
-                  writeOptions.getDatasetUri(), arrowStream, params, storageOptionsProvider);
+              return Fragment.create(writeOptions.getDatasetUri(), arrowStream, params);
             }
           };
       FutureTask<List<FragmentMetadata>> fragmentCreationTask =
@@ -237,33 +246,6 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
           writeOptions,
           new LanceDataWriter(writeBuffer, fragmentCreationTask, fragmentCreationThread),
           initialStorageOptions);
-    }
-
-    private WriteParams buildWriteParams() {
-      Map<String, String> merged =
-          LanceRuntime.mergeStorageOptions(writeOptions.getStorageOptions(), initialStorageOptions);
-
-      WriteParams.Builder builder = new WriteParams.Builder();
-      builder.withMode(writeOptions.getWriteMode());
-      if (writeOptions.getMaxRowsPerFile() != null) {
-        builder.withMaxRowsPerFile(writeOptions.getMaxRowsPerFile());
-      }
-      if (writeOptions.getMaxRowsPerGroup() != null) {
-        builder.withMaxRowsPerGroup(writeOptions.getMaxRowsPerGroup());
-      }
-      if (writeOptions.getMaxBytesPerFile() != null) {
-        builder.withMaxBytesPerFile(writeOptions.getMaxBytesPerFile());
-      }
-      if (writeOptions.getDataStorageVersion() != null) {
-        builder.withDataStorageVersion(writeOptions.getDataStorageVersion());
-      }
-      builder.withStorageOptions(merged);
-      return builder.build();
-    }
-
-    private StorageOptionsProvider getStorageOptionsProvider() {
-      return LanceRuntime.getOrCreateStorageOptionsProvider(
-          namespaceImpl, namespaceProperties, tableId);
     }
   }
 
@@ -327,7 +309,10 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
       List<FragmentMetadata> updatedFragments = new ArrayList<>();
 
       // Deleting updated rows from old fragments using SDK directly.
-      try (Dataset dataset = openDataset(writeOptions)) {
+      try (Dataset dataset =
+          Utils.openDatasetBuilder(writeOptions)
+              .initialStorageOptions(initialStorageOptions)
+              .build()) {
         this.deletedRows.forEach(
             (fragmentId, rowIndexes) -> {
               FragmentMetadata updatedFragment =
@@ -343,22 +328,6 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
       return new DeltaWriteTaskCommit(removedFragmentIds, updatedFragments, newFragments);
     }
 
-    private Dataset openDataset(LanceSparkWriteOptions options) {
-      // Note: options.hasNamespace() is false on workers (namespace is transient)
-      Map<String, String> merged =
-          LanceRuntime.mergeStorageOptions(options.getStorageOptions(), initialStorageOptions);
-      ReadOptions readOptions =
-          new ReadOptions.Builder()
-              .setStorageOptions(merged)
-              .setSession(LanceRuntime.session())
-              .build();
-      return Dataset.open()
-          .allocator(LanceRuntime.allocator())
-          .uri(options.getDatasetUri())
-          .readOptions(readOptions)
-          .build();
-    }
-
     @Override
     public void abort() throws IOException {
       writer.abort();
@@ -370,7 +339,7 @@ public class SparkPositionDeltaWrite implements DeltaWrite, RequiresDistribution
     }
   }
 
-  private static class DeltaWriteTaskCommit implements WriterCommitMessage {
+  static class DeltaWriteTaskCommit implements WriterCommitMessage {
     private List<Long> removedFragmentIds;
     private List<FragmentMetadata> updatedFragments;
     private List<FragmentMetadata> newFragments;

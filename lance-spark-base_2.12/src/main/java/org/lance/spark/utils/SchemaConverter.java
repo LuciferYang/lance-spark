@@ -13,72 +13,35 @@
  */
 package org.lance.spark.utils;
 
-import org.lance.namespace.model.JsonArrowDataType;
-import org.lance.namespace.model.JsonArrowField;
-import org.lance.namespace.model.JsonArrowSchema;
-
 import org.apache.spark.sql.types.ArrayType;
 import org.apache.spark.sql.types.BinaryType;
-import org.apache.spark.sql.types.BooleanType;
-import org.apache.spark.sql.types.ByteType;
-import org.apache.spark.sql.types.CalendarIntervalType;
 import org.apache.spark.sql.types.DataType;
-import org.apache.spark.sql.types.DateType;
-import org.apache.spark.sql.types.DayTimeIntervalType;
-import org.apache.spark.sql.types.DecimalType;
 import org.apache.spark.sql.types.DoubleType;
 import org.apache.spark.sql.types.FloatType;
-import org.apache.spark.sql.types.IntegerType;
-import org.apache.spark.sql.types.LongType;
-import org.apache.spark.sql.types.MapType;
 import org.apache.spark.sql.types.Metadata;
 import org.apache.spark.sql.types.MetadataBuilder;
-import org.apache.spark.sql.types.NullType;
-import org.apache.spark.sql.types.ShortType;
 import org.apache.spark.sql.types.StringType;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.types.TimestampNTZType;
-import org.apache.spark.sql.types.TimestampType;
-import org.apache.spark.sql.types.UserDefinedType;
-import org.apache.spark.sql.types.YearMonthIntervalType;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 import static org.lance.spark.utils.BlobUtils.LANCE_ENCODING_BLOB_KEY;
 import static org.lance.spark.utils.BlobUtils.LANCE_ENCODING_BLOB_VALUE;
+import static org.lance.spark.utils.Float16Utils.ARROW_FLOAT16_KEY;
+import static org.lance.spark.utils.Float16Utils.ARROW_FLOAT16_VALUE;
 import static org.lance.spark.utils.LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY;
 import static org.lance.spark.utils.LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE;
 import static org.lance.spark.utils.VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY;
 
 /**
- * Utility class for converting Spark schema types to JsonArrow schema types used by the Lance
- * Namespace API.
+ * Utility class that augments a Spark {@link StructType} with Lance-specific column metadata
+ * (vector fixed-size-list, Float16, blob, large varchar) derived from table properties.
  */
 public class SchemaConverter {
 
   private SchemaConverter() {
     // Utility class
-  }
-
-  /**
-   * Converts a Spark StructType to JsonArrowSchema.
-   *
-   * @param sparkSchema the Spark StructType to convert
-   * @return JsonArrowSchema representation
-   */
-  public static JsonArrowSchema toJsonArrowSchema(StructType sparkSchema) {
-    JsonArrowSchema jsonSchema = new JsonArrowSchema();
-    List<JsonArrowField> fields = new ArrayList<>();
-
-    for (StructField sparkField : sparkSchema.fields()) {
-      fields.add(toJsonArrowField(sparkField));
-    }
-
-    jsonSchema.setFields(fields);
-    return jsonSchema;
   }
 
   /**
@@ -91,7 +54,8 @@ public class SchemaConverter {
   public static StructType processSchemaWithProperties(
       StructType sparkSchema, Map<String, String> properties) {
     StructType schemaWithVectors = addVectorMetadata(sparkSchema, properties);
-    StructType schemaWithBlobs = addBlobMetadata(schemaWithVectors, properties);
+    StructType schemaWithFloat16 = addFloat16Metadata(schemaWithVectors, properties);
+    StructType schemaWithBlobs = addBlobMetadata(schemaWithFloat16, properties);
     return addLargeVarCharMetadata(schemaWithBlobs, properties);
   }
 
@@ -147,6 +111,71 @@ public class SchemaConverter {
         }
       } else {
         // Keep field as-is
+        newFields[i] = field;
+      }
+    }
+
+    return new StructType(newFields);
+  }
+
+  /**
+   * Adds float16 metadata to vector fields based on table properties. Properties with pattern
+   * "<column_name>.arrow.float16" = "true" are applied to matching columns. The field must already
+   * have fixed-size-list metadata and be ArrayType(FloatType).
+   *
+   * @param sparkSchema the Spark StructType (already processed by addVectorMetadata)
+   * @param properties table properties that may contain float16 column metadata
+   * @return StructType with float16 metadata added
+   */
+  private static StructType addFloat16Metadata(
+      StructType sparkSchema, Map<String, String> properties) {
+    if (properties == null || properties.isEmpty()) {
+      return sparkSchema;
+    }
+
+    StructField[] newFields = new StructField[sparkSchema.fields().length];
+    for (int i = 0; i < sparkSchema.fields().length; i++) {
+      StructField field = sparkSchema.fields()[i];
+      String float16Property = Float16Utils.createPropertyKey(field.name());
+
+      if (properties.containsKey(float16Property)) {
+        String value = properties.get(float16Property);
+        if ("true".equalsIgnoreCase(value)) {
+          // Validate: must be ArrayType(FloatType) with fixed-size-list metadata
+          if (!(field.dataType() instanceof ArrayType)) {
+            throw new IllegalArgumentException(
+                "Float16 column '"
+                    + field.name()
+                    + "' must be an ARRAY type, found: "
+                    + field.dataType());
+          }
+          ArrayType arrayType = (ArrayType) field.dataType();
+          if (!(arrayType.elementType() instanceof FloatType)) {
+            throw new IllegalArgumentException(
+                "Float16 column '"
+                    + field.name()
+                    + "' must have element type FLOAT, found: "
+                    + arrayType.elementType());
+          }
+          if (!field.metadata().contains(ARROW_FIXED_SIZE_LIST_SIZE_KEY)) {
+            throw new IllegalArgumentException(
+                "Float16 column '"
+                    + field.name()
+                    + "' must also have '"
+                    + ARROW_FIXED_SIZE_LIST_SIZE_KEY
+                    + "' property set");
+          }
+          Metadata newMetadata =
+              new MetadataBuilder()
+                  .withMetadata(field.metadata())
+                  .putString(ARROW_FLOAT16_KEY, ARROW_FLOAT16_VALUE)
+                  .build();
+          newFields[i] =
+              new StructField(field.name(), field.dataType(), field.nullable(), newMetadata);
+        } else {
+          newFields[i] = field;
+        }
+      } else {
         newFields[i] = field;
       }
     }
@@ -257,157 +286,5 @@ public class SchemaConverter {
     }
 
     return new StructType(newFields);
-  }
-
-  /**
-   * Converts a Spark StructField to JsonArrowField.
-   *
-   * @param sparkField the Spark StructField to convert
-   * @return JsonArrowField representation
-   */
-  private static JsonArrowField toJsonArrowField(StructField sparkField) {
-    JsonArrowField field = new JsonArrowField();
-    field.setName(sparkField.name());
-    field.setNullable(sparkField.nullable());
-    field.setType(
-        toJsonArrowDataType(sparkField.dataType(), sparkField.name(), sparkField.metadata()));
-    return field;
-  }
-
-  /**
-   * Converts a Spark DataType to JsonArrowDataType.
-   *
-   * @param sparkType the Spark DataType to convert
-   * @param fieldName the name of the field (used for special cases like ROW_ID)
-   * @return JsonArrowDataType representation
-   */
-  private static JsonArrowDataType toJsonArrowDataType(DataType sparkType, String fieldName) {
-    return toJsonArrowDataType(sparkType, fieldName, null);
-  }
-
-  /**
-   * Converts a Spark DataType to JsonArrowDataType.
-   *
-   * @param sparkType the Spark DataType to convert
-   * @param fieldName the name of the field (used for special cases like ROW_ID)
-   * @param metadata the field metadata (may contain vector column information)
-   * @return JsonArrowDataType representation
-   */
-  private static JsonArrowDataType toJsonArrowDataType(
-      DataType sparkType, String fieldName, Metadata metadata) {
-    JsonArrowDataType dataType = new JsonArrowDataType();
-
-    if (sparkType instanceof BooleanType) {
-      dataType.setType("bool");
-    } else if (sparkType instanceof ByteType) {
-      dataType.setType("int8");
-    } else if (sparkType instanceof ShortType) {
-      dataType.setType("int16");
-    } else if (sparkType instanceof IntegerType) {
-      dataType.setType("int32");
-    } else if (sparkType instanceof LongType) {
-      dataType.setType("int64");
-      // Special handling for ROW_ID field (unsigned 64-bit)
-      // Note: JsonArrowDataType doesn't have signed/unsigned distinction in this simple mapping
-    } else if (sparkType instanceof FloatType) {
-      dataType.setType("float32");
-    } else if (sparkType instanceof DoubleType) {
-      dataType.setType("float64");
-    } else if (sparkType instanceof StringType) {
-      dataType.setType("string");
-    } else if (sparkType instanceof BinaryType) {
-      dataType.setType("binary");
-    } else if (sparkType instanceof DateType) {
-      dataType.setType("date");
-    } else if (sparkType instanceof TimestampType) {
-      dataType.setType("timestamp");
-    } else if (sparkType instanceof TimestampNTZType) {
-      dataType.setType("timestamp");
-    } else if (sparkType instanceof DecimalType) {
-      DecimalType decimalType = (DecimalType) sparkType;
-      dataType.setType("decimal");
-      // Note: precision and scale would need additional fields if supported
-    } else if (sparkType instanceof NullType) {
-      dataType.setType("null");
-    } else if (sparkType instanceof YearMonthIntervalType) {
-      dataType.setType("interval");
-    } else if (sparkType instanceof DayTimeIntervalType) {
-      dataType.setType("duration");
-    } else if (sparkType instanceof CalendarIntervalType) {
-      dataType.setType("interval");
-    } else if (sparkType instanceof ArrayType) {
-      ArrayType arrayType = (ArrayType) sparkType;
-
-      // Check if this should be a FixedSizeList based on metadata
-      boolean isFixedSizeList = false;
-      Long fixedSize = null;
-      if (metadata != null && metadata.contains(ARROW_FIXED_SIZE_LIST_SIZE_KEY)) {
-        try {
-          fixedSize = metadata.getLong(ARROW_FIXED_SIZE_LIST_SIZE_KEY);
-          isFixedSizeList = true;
-        } catch (Exception e) {
-          // Fall back to regular list if metadata is invalid
-        }
-      }
-
-      if (isFixedSizeList && fixedSize != null) {
-        dataType.setType("fixedsizelist");
-        dataType.setLength(fixedSize);
-      } else {
-        dataType.setType("list");
-      }
-
-      // Create item field (Arrow convention for list child field)
-      JsonArrowField itemField = new JsonArrowField();
-      itemField.setName("item");
-      itemField.setNullable(arrayType.containsNull());
-      itemField.setType(toJsonArrowDataType(arrayType.elementType(), "item", null));
-      List<JsonArrowField> fields = new ArrayList<>();
-      fields.add(itemField);
-      dataType.setFields(fields);
-
-    } else if (sparkType instanceof StructType) {
-      StructType structType = (StructType) sparkType;
-      dataType.setType("struct");
-      List<JsonArrowField> fields = new ArrayList<>();
-      for (StructField field : structType.fields()) {
-        fields.add(toJsonArrowField(field));
-      }
-      dataType.setFields(fields);
-    } else if (sparkType instanceof MapType) {
-      MapType mapType = (MapType) sparkType;
-      dataType.setType("map");
-      List<JsonArrowField> fields = new ArrayList<>();
-      // Create struct field containing key and value
-      JsonArrowField mapStructField = new JsonArrowField();
-      mapStructField.setName("entries");
-      mapStructField.setNullable(false);
-      JsonArrowDataType mapStructType = new JsonArrowDataType();
-      mapStructType.setType("struct");
-      List<JsonArrowField> structFields = new ArrayList<>();
-      // Key field
-      JsonArrowField keyField = new JsonArrowField();
-      keyField.setName("key");
-      keyField.setNullable(false);
-      keyField.setType(toJsonArrowDataType(mapType.keyType(), "key"));
-      structFields.add(keyField);
-      // Value field
-      JsonArrowField valueField = new JsonArrowField();
-      valueField.setName("value");
-      valueField.setNullable(mapType.valueContainsNull());
-      valueField.setType(toJsonArrowDataType(mapType.valueType(), "value"));
-      structFields.add(valueField);
-      mapStructType.setFields(structFields);
-      mapStructField.setType(mapStructType);
-      fields.add(mapStructField);
-      dataType.setFields(fields);
-    } else if (sparkType instanceof UserDefinedType) {
-      UserDefinedType<?> udt = (UserDefinedType<?>) sparkType;
-      return toJsonArrowDataType(udt.sqlType(), fieldName);
-    } else {
-      throw new IllegalArgumentException("Unsupported Spark data type: " + sparkType);
-    }
-
-    return dataType;
   }
 }

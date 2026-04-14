@@ -13,8 +13,6 @@
  */
 package org.lance.spark;
 
-import org.lance.Dataset;
-import org.lance.ReadOptions;
 import org.lance.Session;
 import org.lance.namespace.LanceNamespace;
 
@@ -22,15 +20,14 @@ import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Runtime utilities for Lance Spark connector.
  *
- * <p>This class manages a global Arrow buffer allocator, per-catalog Sessions for Rust-side cache
- * efficiency, dataset opening, and helper methods for namespace operations.
+ * <p>This class manages a global Arrow buffer allocator, a shared Session for cache efficiency, and
+ * provides helper methods for namespace operations.
  *
  * <p>Session cache sizes can be configured via environment variables:
  *
@@ -232,51 +229,5 @@ public final class LanceRuntime {
       merged.putAll(initialStorageOptions);
     }
     return merged;
-  }
-
-  /**
-   * Opens a Lance dataset.
-   *
-   * <p>Handles storage options merging, session wiring, namespace provider creation, and version
-   * pinning. The caller is responsible for closing the returned dataset.
-   *
-   * @param uri the dataset URI
-   * @param catalogName the catalog name for session isolation
-   * @param version the explicit dataset version (null for latest)
-   * @param storageOptions base storage options
-   * @param initialStorageOptions initial options from describeTable (can be null)
-   * @param namespaceImpl namespace implementation type (can be null)
-   * @param namespaceProperties namespace connection properties (can be null)
-   * @param tableId table identifier for namespace operations (can be null)
-   * @return the opened Dataset
-   */
-  public static Dataset openDataset(
-      String uri,
-      String catalogName,
-      Long version,
-      Map<String, String> storageOptions,
-      Map<String, String> initialStorageOptions,
-      String namespaceImpl,
-      Map<String, String> namespaceProperties,
-      List<String> tableId) {
-    Map<String, String> merged = mergeStorageOptions(storageOptions, initialStorageOptions);
-    LanceNamespace namespace = getOrCreateNamespace(namespaceImpl, namespaceProperties);
-
-    ReadOptions.Builder roBuilder =
-        new ReadOptions.Builder().setStorageOptions(merged).setSession(session(catalogName));
-
-    if (version != null) {
-      roBuilder.setVersion(version);
-    }
-
-    if (namespace != null && tableId != null) {
-      return Dataset.open()
-          .allocator(allocator())
-          .namespaceClient(namespace)
-          .tableId(tableId)
-          .readOptions(roBuilder.build())
-          .build();
-    }
-    return Dataset.open().allocator(allocator()).uri(uri).readOptions(roBuilder.build()).build();
   }
 }

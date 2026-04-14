@@ -18,9 +18,9 @@ import org.lance.Fragment;
 import org.lance.ipc.LanceScanner;
 import org.lance.ipc.ScanOptions;
 import org.lance.spark.LanceConstant;
-import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.read.LanceInputPartition;
+import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.spark.sql.types.StructField;
@@ -56,15 +56,9 @@ public class LanceFragmentScanner implements AutoCloseable {
     try {
       LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
       dataset =
-          LanceRuntime.openDataset(
-              readOptions.getDatasetUri(),
-              readOptions.getCatalogName(),
-              readOptions.getVersion() != null ? readOptions.getVersion().longValue() : null,
-              readOptions.getStorageOptions(),
-              inputPartition.getInitialStorageOptions(),
-              inputPartition.getNamespaceImpl(),
-              inputPartition.getNamespaceProperties(),
-              readOptions.getTableId());
+          Utils.openDatasetBuilder(readOptions)
+              .initialStorageOptions(inputPartition.getInitialStorageOptions())
+              .build();
       Fragment fragment = dataset.getFragment(fragmentId);
       if (fragment == null) {
         throw new IllegalStateException(

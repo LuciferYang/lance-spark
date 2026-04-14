@@ -13,6 +13,7 @@
  */
 package org.lance.spark.internal;
 
+import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.ipc.LanceScanner;
 import org.lance.ipc.ScanOptions;
@@ -31,16 +32,19 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public class LanceFragmentScanner implements AutoCloseable {
+  private final Dataset dataset;
   private final LanceScanner scanner;
   private final int fragmentId;
   private final boolean withFragemtId;
   private final LanceInputPartition inputPartition;
 
   private LanceFragmentScanner(
+      Dataset dataset,
       LanceScanner scanner,
       int fragmentId,
       boolean withFragmentId,
       LanceInputPartition inputPartition) {
+    this.dataset = dataset;
     this.scanner = scanner;
     this.fragmentId = fragmentId;
     this.withFragemtId = withFragmentId;
@@ -48,15 +52,26 @@ public class LanceFragmentScanner implements AutoCloseable {
   }
 
   public static LanceFragmentScanner create(int fragmentId, LanceInputPartition inputPartition) {
+    Dataset dataset = null;
     try {
       LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
-      Fragment fragment =
-          LanceRuntime.getFragment(
-              readOptions,
-              fragmentId,
+      dataset =
+          LanceRuntime.openDataset(
+              readOptions.getDatasetUri(),
+              readOptions.getCatalogName(),
+              readOptions.getVersion() != null ? readOptions.getVersion().longValue() : null,
+              readOptions.getStorageOptions(),
               inputPartition.getInitialStorageOptions(),
               inputPartition.getNamespaceImpl(),
-              inputPartition.getNamespaceProperties());
+              inputPartition.getNamespaceProperties(),
+              readOptions.getTableId());
+      Fragment fragment = dataset.getFragment(fragmentId);
+      if (fragment == null) {
+        throw new IllegalStateException(
+            String.format(
+                "Fragment %d not found in dataset at %s (version=%s)",
+                fragmentId, readOptions.getDatasetUri(), readOptions.getVersion()));
+      }
       ScanOptions.Builder scanOptions = new ScanOptions.Builder();
       List<String> projectedColumns = getColumnNames(inputPartition.getSchema());
       if (projectedColumns.isEmpty() && inputPartition.getSchema().isEmpty()) {
@@ -95,8 +110,19 @@ public class LanceFragmentScanner implements AutoCloseable {
       boolean withFragmentId =
           inputPartition.getSchema().getFieldIndex(LanceConstant.FRAGMENT_ID).nonEmpty();
       return new LanceFragmentScanner(
-          fragment.newScan(scanOptions.build()), fragmentId, withFragmentId, inputPartition);
+          dataset,
+          fragment.newScan(scanOptions.build()),
+          fragmentId,
+          withFragmentId,
+          inputPartition);
     } catch (Throwable throwable) {
+      if (dataset != null) {
+        try {
+          dataset.close();
+        } catch (Throwable closeError) {
+          throwable.addSuppressed(closeError);
+        }
+      }
       throw new RuntimeException(throwable);
     }
   }
@@ -110,12 +136,36 @@ public class LanceFragmentScanner implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    Throwable primary = null;
     if (scanner != null) {
       try {
         scanner.close();
-      } catch (Exception e) {
-        throw new IOException(e);
+      } catch (Throwable t) {
+        primary = t;
       }
+    }
+    if (dataset != null) {
+      try {
+        dataset.close();
+      } catch (Throwable t) {
+        if (primary != null) {
+          primary.addSuppressed(t);
+        } else {
+          primary = t;
+        }
+      }
+    }
+    if (primary != null) {
+      if (primary instanceof IOException) {
+        throw (IOException) primary;
+      }
+      if (primary instanceof RuntimeException) {
+        throw (RuntimeException) primary;
+      }
+      if (primary instanceof Error) {
+        throw (Error) primary;
+      }
+      throw new IOException(primary);
     }
   }
 

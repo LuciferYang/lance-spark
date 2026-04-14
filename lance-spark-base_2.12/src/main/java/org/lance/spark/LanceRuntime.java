@@ -14,33 +14,23 @@
 package org.lance.spark;
 
 import org.lance.Dataset;
-import org.lance.Fragment;
 import org.lance.ReadOptions;
 import org.lance.Session;
 import org.lance.namespace.LanceNamespace;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.cache.RemovalListener;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Runtime utilities for Lance Spark connector.
  *
- * <p>This class manages a global Arrow buffer allocator, a shared Session for cache efficiency,
- * dataset caching for executor-side reads, and helper methods for namespace operations.
+ * <p>This class manages a global Arrow buffer allocator, per-catalog Sessions for Rust-side cache
+ * efficiency, dataset opening, and helper methods for namespace operations.
  *
  * <p>Session cache sizes can be configured via environment variables:
  *
@@ -58,8 +48,6 @@ import java.util.concurrent.TimeUnit;
  * }</pre>
  */
 public final class LanceRuntime {
-
-  private static final Logger LOG = LoggerFactory.getLogger(LanceRuntime.class);
 
   /** Environment variable for allocator size. */
   public static final String ENV_ALLOCATOR_SIZE = "LANCE_ALLOCATOR_SIZE";
@@ -247,12 +235,10 @@ public final class LanceRuntime {
   }
 
   /**
-   * Opens a Lance dataset without caching.
+   * Opens a Lance dataset.
    *
    * <p>Handles storage options merging, session wiring, namespace provider creation, and version
-   * pinning. Most executor-side reads should use {@link #getCachedDataset} or {@link #getFragment}
-   * instead; this method is for callers that manage dataset lifecycle themselves (e.g. {@code
-   * LanceCountStarPartitionReader}).
+   * pinning. The caller is responsible for closing the returned dataset.
    *
    * @param uri the dataset URI
    * @param catalogName the catalog name for session isolation
@@ -292,203 +278,5 @@ public final class LanceRuntime {
           .build();
     }
     return Dataset.open().allocator(allocator()).uri(uri).readOptions(roBuilder.build()).build();
-  }
-
-  /**
-   * Cache key for dataset lookup.
-   *
-   * <p>The key uses (catalogName, URI, version) to ensure immutable dataset caching with
-   * per-catalog isolation. The version is always explicit because it's resolved during scan
-   * planning - this ensures snapshot isolation. The catalogName ensures that multiple Lance
-   * catalogs in the same Spark application have isolated caches.
-   */
-  public static class DatasetCacheKey {
-    private final String catalogName;
-    private final String uri;
-    private final Long version;
-    private final Map<String, String> storageOptions;
-    private final Map<String, String> initialStorageOptions;
-    private final String namespaceImpl;
-    private final Map<String, String> namespaceProperties;
-    private final List<String> tableId;
-
-    public DatasetCacheKey(
-        String catalogName,
-        String uri,
-        Long version,
-        Map<String, String> storageOptions,
-        Map<String, String> initialStorageOptions,
-        String namespaceImpl,
-        Map<String, String> namespaceProperties,
-        List<String> tableId) {
-      this.catalogName = catalogName != null ? catalogName : DEFAULT_CATALOG;
-      this.uri = uri;
-      this.version = version;
-      this.storageOptions = storageOptions;
-      this.initialStorageOptions = initialStorageOptions;
-      this.namespaceImpl = namespaceImpl;
-      this.namespaceProperties = namespaceProperties;
-      this.tableId = tableId;
-    }
-
-    public String getCatalogName() {
-      return catalogName;
-    }
-
-    public String getUri() {
-      return uri;
-    }
-
-    public Long getVersion() {
-      return version;
-    }
-
-    public Map<String, String> getStorageOptions() {
-      return storageOptions;
-    }
-
-    public Map<String, String> getInitialStorageOptions() {
-      return initialStorageOptions;
-    }
-
-    public String getNamespaceImpl() {
-      return namespaceImpl;
-    }
-
-    public Map<String, String> getNamespaceProperties() {
-      return namespaceProperties;
-    }
-
-    public List<String> getTableId() {
-      return tableId;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      if (o == null || getClass() != o.getClass()) {
-        return false;
-      }
-      DatasetCacheKey that = (DatasetCacheKey) o;
-      return Objects.equals(catalogName, that.catalogName)
-          && Objects.equals(uri, that.uri)
-          && Objects.equals(version, that.version);
-    }
-
-    @Override
-    public int hashCode() {
-      return Objects.hash(catalogName, uri, version);
-    }
-
-    @Override
-    public String toString() {
-      return String.format(
-          "DatasetCacheKey(catalog=%s, uri=%s, version=%s)", catalogName, uri, version);
-    }
-  }
-
-  private static final LoadingCache<DatasetCacheKey, Dataset> CACHE =
-      CacheBuilder.newBuilder()
-          .maximumSize(100)
-          .expireAfterAccess(1, TimeUnit.HOURS)
-          .removalListener(
-              (RemovalListener<DatasetCacheKey, Dataset>)
-                  notification -> {
-                    Dataset dataset = notification.getValue();
-                    if (dataset != null) {
-                      LOG.debug(
-                          "Closing cached dataset: {} (reason: {})",
-                          notification.getKey(),
-                          notification.getCause());
-                      dataset.close();
-                    }
-                  })
-          .build(
-              new CacheLoader<DatasetCacheKey, Dataset>() {
-                @Override
-                public Dataset load(DatasetCacheKey key) {
-                  LOG.debug("Opening dataset for cache: {}", key);
-                  return openDataset(
-                      key.getUri(),
-                      key.getCatalogName(),
-                      key.getVersion(),
-                      key.getStorageOptions(),
-                      key.getInitialStorageOptions(),
-                      key.getNamespaceImpl(),
-                      key.getNamespaceProperties(),
-                      key.getTableId());
-                }
-              });
-
-  /**
-   * Gets a cached dataset for the given read options.
-   *
-   * <p>The version in readOptions should always be explicit (resolved during scan planning) to
-   * ensure snapshot isolation. A dataset at a specific version is immutable, so caching by (URI,
-   * version) is safe.
-   *
-   * @param readOptions the read options (must have explicit version for snapshot isolation)
-   * @param initialStorageOptions initial storage options from describeTable()
-   * @param namespaceImpl namespace implementation type
-   * @param namespaceProperties namespace connection properties
-   * @return the cached dataset
-   */
-  public static Dataset getCachedDataset(
-      LanceSparkReadOptions readOptions,
-      Map<String, String> initialStorageOptions,
-      String namespaceImpl,
-      Map<String, String> namespaceProperties) {
-    DatasetCacheKey key =
-        new DatasetCacheKey(
-            readOptions.getCatalogName(),
-            readOptions.getDatasetUri(),
-            readOptions.getVersion() != null ? (long) readOptions.getVersion() : null,
-            readOptions.getStorageOptions(),
-            initialStorageOptions,
-            namespaceImpl,
-            namespaceProperties,
-            readOptions.getTableId());
-    try {
-      return CACHE.get(key);
-    } catch (ExecutionException e) {
-      throw new RuntimeException("Failed to get cached dataset: " + key, e);
-    }
-  }
-
-  /**
-   * Gets a fragment from the cached dataset.
-   *
-   * @param readOptions the read options (must have explicit version for snapshot isolation)
-   * @param fragmentId the fragment ID
-   * @param initialStorageOptions initial storage options from describeTable()
-   * @param namespaceImpl namespace implementation type
-   * @param namespaceProperties namespace connection properties
-   * @return the fragment
-   */
-  public static Fragment getFragment(
-      LanceSparkReadOptions readOptions,
-      int fragmentId,
-      Map<String, String> initialStorageOptions,
-      String namespaceImpl,
-      Map<String, String> namespaceProperties) {
-    Dataset dataset =
-        getCachedDataset(readOptions, initialStorageOptions, namespaceImpl, namespaceProperties);
-    Fragment fragment = dataset.getFragment(fragmentId);
-    if (fragment == null) {
-      throw new IllegalStateException(
-          String.format(
-              "Fragment %d not found in dataset at %s (version=%s)",
-              fragmentId, readOptions.getDatasetUri(), readOptions.getVersion()));
-    }
-    return fragment;
-  }
-
-  /** Clears the dataset cache. Primarily for testing. */
-  static void clearCache() {
-    CACHE.invalidateAll();
-  }
-
-  /** Returns the current dataset cache size. Primarily for testing. */
-  static long cacheSize() {
-    return CACHE.size();
   }
 }

@@ -121,7 +121,6 @@
         <maven-install-plugin.version>2.5.2</maven-install-plugin.version>
         <maven-resources-plugin.version>3.0.2</maven-resources-plugin.version>
         <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
-        <test.excludedGroups>benchmark</test.excludedGroups>
         <java11.release>11</java11.release>
         <java17.release>17</java17.release>
         <java.release>${java11.release}</java.release>
@@ -408,7 +407,6 @@
                             </argLine>
                             <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
                             <useSystemClassLoader>false</useSystemClassLoader>
-                            <excludedGroups>${test.excludedGroups}</excludedGroups>
                         </configuration>
                     </plugin>
                 </plugins>
@@ -462,7 +460,6 @@
                             </argLine>
                             <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
                             <useSystemClassLoader>false</useSystemClassLoader>
-                            <excludedGroups>${test.excludedGroups}</excludedGroups>
                         </configuration>
                     </plugin>
                 </plugins>

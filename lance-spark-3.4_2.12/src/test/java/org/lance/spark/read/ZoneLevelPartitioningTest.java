@@ -13,4 +13,4 @@
  */
 package org.lance.spark.read;
 
-public class ZoneLevelPartitioning35Test extends BaseZoneLevelPartitioningTest {}
+public class ZoneLevelPartitioningTest extends BaseZoneLevelPartitioningTest {}

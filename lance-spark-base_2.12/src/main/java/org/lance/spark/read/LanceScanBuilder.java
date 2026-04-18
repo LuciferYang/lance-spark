@@ -189,7 +189,8 @@ public class LanceScanBuilder
     }
 
     // Scale rows and full size by the zonemap fragment-pruning ratio first, then let
-    // LanceStatistics.estimateProjected apply the column-width ratio on top.
+    // LanceStatistics.estimateProjected apply the column-width ratio on top
+    // (when the projected schema is narrower than the full schema).
     long projectedRows = summary.getTotalRows();
     long projectedFullSize = summary.getTotalFilesSize();
     if (survivingFragmentIds != null && summary.getTotalFragments() > 0) {
@@ -201,7 +202,7 @@ public class LanceScanBuilder
         LanceStatistics.estimateProjected(projectedRows, projectedFullSize, fullSchema, schema);
     if (survivingFragmentIds != null) {
       LOG.debug(
-          "Estimated post-pruning statistics: {} of {} fragments survive,"
+          "Scan statistics after pruning: {} of {} fragments survive,"
               + " estimatedSize={}, estimatedRows={} (full: size={}, rows={})",
           survivingFragmentIds.size(),
           summary.getTotalFragments(),

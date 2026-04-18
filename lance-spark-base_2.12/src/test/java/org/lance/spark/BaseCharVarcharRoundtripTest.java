@@ -47,7 +47,8 @@ public abstract class BaseCharVarcharRoundtripTest {
         SparkSession.builder()
             .appName("lance-char-varchar-roundtrip-test")
             .master("local")
-            .config("spark.sql.catalog." + catalogName, "org.lance.spark.LanceNamespaceSparkCatalog")
+            .config(
+                "spark.sql.catalog." + catalogName, "org.lance.spark.LanceNamespaceSparkCatalog")
             .config("spark.sql.catalog." + catalogName + ".impl", "dir")
             .config("spark.sql.catalog." + catalogName + ".root", tempDir.toString())
             .getOrCreate();

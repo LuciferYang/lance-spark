@@ -18,6 +18,7 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.SaveMode;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.AfterAll;
@@ -381,6 +382,70 @@ public abstract class BaseSparkDataTypeRoundtripTest {
                 + ")",
             iteratorAttempt);
       }
+    }
+  }
+
+  // ---------------- char / varchar ----------------
+
+  /**
+   * Create a CharType or VarcharType via reflection so the test compiles against all Spark versions
+   * (3.4/3.5/4.0/4.1). In 3.4/3.5 the case class constructor is public and takes a single {@code
+   * int} parameter; in 4.0+ it is {@code private[sql]} with two parameters ({@code int, Option})
+   * but the companion object provides {@code apply(int)}.
+   */
+  private static DataType createCharOrVarcharType(String className, int length) {
+    try {
+      // Try the Scala companion-object apply(Int) overload — works on all versions.
+      Class<?> moduleClass = Class.forName("org.apache.spark.sql.types." + className + "$");
+      Object module = moduleClass.getField("MODULE$").get(null);
+      return (DataType) moduleClass.getMethod("apply", int.class).invoke(module, length);
+    } catch (ReflectiveOperationException e) {
+      throw new AssertionError("Cannot create " + className + "(" + length + ")", e);
+    }
+  }
+
+  @Test
+  public void testCharTypeRoundtrip() {
+    DataType charType = createCharOrVarcharType("CharType", 10);
+    // Spark normally rejects CharType/VarcharType in user-facing schemas (createDataFrame) and
+    // auto-normalizes them to StringType in the V2 write path. This config lets raw CharType
+    // reach the connector, exercising the defensive branches in LanceArrowUtils/LanceArrowWriter.
+    spark.conf().set("spark.sql.legacy.charVarcharAsString", "true");
+    try {
+      StructType schema =
+          new StructType().add("id", DataTypes.IntegerType, false).add("v", charType, true);
+      List<Row> data =
+          Arrays.asList(
+              RowFactory.create(0, "hello"), RowFactory.create(1, ""), RowFactory.create(2, null));
+      List<Row> out = writeAndRead(schema, data, "char_type").orderBy("id").collectAsList();
+      assertEquals(3, out.size());
+      // CharType is stored as Arrow Utf8 — length constraint is not preserved on read.
+      assertEquals("hello", out.get(0).getString(1));
+      assertEquals("", out.get(1).getString(1));
+      assertTrue(out.get(2).isNullAt(1));
+    } finally {
+      spark.conf().set("spark.sql.legacy.charVarcharAsString", "false");
+    }
+  }
+
+  @Test
+  public void testVarcharTypeRoundtrip() {
+    DataType varcharType = createCharOrVarcharType("VarcharType", 50);
+    spark.conf().set("spark.sql.legacy.charVarcharAsString", "true");
+    try {
+      StructType schema =
+          new StructType().add("id", DataTypes.IntegerType, false).add("v", varcharType, true);
+      List<Row> data =
+          Arrays.asList(
+              RowFactory.create(0, "world"), RowFactory.create(1, ""), RowFactory.create(2, null));
+      List<Row> out = writeAndRead(schema, data, "varchar_type").orderBy("id").collectAsList();
+      assertEquals(3, out.size());
+      // VarcharType is stored as Arrow Utf8 — length constraint is not preserved on read.
+      assertEquals("world", out.get(0).getString(1));
+      assertEquals("", out.get(1).getString(1));
+      assertTrue(out.get(2).isNullAt(1));
+    } finally {
+      spark.conf().set("spark.sql.legacy.charVarcharAsString", "false");
     }
   }
 

@@ -35,6 +35,7 @@ import org.apache.spark.sql.sources.StringStartsWith;
 import java.math.BigDecimal;
 import java.sql.Date;
 import java.sql.Timestamp;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -86,19 +87,22 @@ public class FilterPushDown {
 
   public static boolean isFilterSupported(Filter filter) {
     if (filter instanceof EqualTo) {
-      return true;
+      return isValuePushdownSupported(((EqualTo) filter).value());
     } else if (filter instanceof EqualNullSafe) {
       return false;
     } else if (filter instanceof In) {
+      for (Object v : ((In) filter).values()) {
+        if (!isValuePushdownSupported(v)) return false;
+      }
       return true;
     } else if (filter instanceof LessThan) {
-      return true;
+      return isValuePushdownSupported(((LessThan) filter).value());
     } else if (filter instanceof LessThanOrEqual) {
-      return true;
+      return isValuePushdownSupported(((LessThanOrEqual) filter).value());
     } else if (filter instanceof GreaterThan) {
-      return true;
+      return isValuePushdownSupported(((GreaterThan) filter).value());
     } else if (filter instanceof GreaterThanOrEqual) {
-      return true;
+      return isValuePushdownSupported(((GreaterThanOrEqual) filter).value());
     } else if (filter instanceof IsNull) {
       return true;
     } else if (filter instanceof IsNotNull) {
@@ -121,6 +125,22 @@ public class FilterPushDown {
     } else {
       return false;
     }
+  }
+
+  /**
+   * Check whether a filter value type can be pushed down to Lance's DataFusion planner.
+   *
+   * <p>Lance's custom SQL planner ({@code lance-datafusion/src/planner.rs}) does not yet support
+   * {@code SQLDataType::Time} in {@code parse_type()}, and {@code safe_coerce_scalar()} does not
+   * handle {@code Utf8 -> Time64} coercion. As a result, any filter containing a {@code
+   * java.time.LocalTime} value (produced by Spark's TimeType) cannot be pushed down and must be
+   * evaluated as a post-scan filter by Spark.
+   *
+   * @param value the literal value from a Spark filter predicate
+   * @return true if the value type is supported for pushdown
+   */
+  private static boolean isValuePushdownSupported(Object value) {
+    return !(value instanceof LocalTime);
   }
 
   private static Optional<String> compileFilter(Filter filter) {
@@ -183,6 +203,13 @@ public class FilterPushDown {
       return "date '" + value.toString().replace("'", "''") + "'";
     } else if (value instanceof Timestamp) {
       return "timestamp '" + value.toString().replace("'", "''") + "'";
+    } else if (value instanceof LocalTime) {
+      // Defensive: currently unreachable because isValuePushdownSupported rejects LocalTime.
+      // Kept for forward compatibility — when Lance upstream adds TIME support to its planner
+      // (parse_type + safe_coerce_scalar), this will produce a valid quoted time literal.
+      LocalTime t = (LocalTime) value;
+      return String.format(
+          "'%02d:%02d:%02d.%06d'", t.getHour(), t.getMinute(), t.getSecond(), t.getNano() / 1000);
     } else if (value instanceof String) {
       return "'" + ((String) value).replace("'", "''") + "'";
     } else if (value instanceof BigDecimal) {

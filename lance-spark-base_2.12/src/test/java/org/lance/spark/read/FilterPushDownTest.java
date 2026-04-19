@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.sql.Date;
 import java.sql.Timestamp;
+import java.time.LocalTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -209,5 +210,50 @@ public class FilterPushDownTest {
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals("(created_at == timestamp '2024-01-15 10:30:00.0')", whereClause.get());
+  }
+
+  @Test
+  public void testLocalTimeFilterRejected() {
+    // LocalTime values (from Spark TimeType) must be rejected from pushdown because
+    // Lance's DataFusion planner does not support SQLDataType::Time in parse_type()
+    // and safe_coerce_scalar() does not handle Utf8 -> Time64 coercion.
+    assertFalse(FilterPushDown.isFilterSupported(new GreaterThan("t", LocalTime.of(12, 30, 45))));
+    assertFalse(FilterPushDown.isFilterSupported(new EqualTo("t", LocalTime.of(0, 0, 0))));
+    assertFalse(
+        FilterPushDown.isFilterSupported(
+            new LessThanOrEqual("t", LocalTime.of(23, 59, 59, 999_999_000))));
+    assertFalse(FilterPushDown.isFilterSupported(new LessThan("t", LocalTime.of(12, 0))));
+    assertFalse(FilterPushDown.isFilterSupported(new GreaterThanOrEqual("t", LocalTime.of(8, 0))));
+
+    // In filter with LocalTime values should also be rejected
+    Object[] timeValues = new Object[] {LocalTime.of(8, 0), LocalTime.of(17, 0)};
+    assertFalse(FilterPushDown.isFilterSupported(new In("t", timeValues)));
+
+    // IsNull/IsNotNull on time columns have no value → still supported
+    assertTrue(FilterPushDown.isFilterSupported(new IsNull("t")));
+    assertTrue(FilterPushDown.isFilterSupported(new IsNotNull("t")));
+
+    // Mixed filter: And with one LocalTime leg rejects the whole And
+    assertFalse(
+        FilterPushDown.isFilterSupported(
+            new And(new GreaterThan("age", 30), new GreaterThan("t", LocalTime.of(12, 0)))));
+
+    // Or with one LocalTime leg rejects the whole Or
+    assertFalse(
+        FilterPushDown.isFilterSupported(
+            new Or(new GreaterThan("t", LocalTime.of(12, 0)), new GreaterThan("age", 30))));
+
+    // Not wrapping a LocalTime filter is also rejected
+    assertFalse(
+        FilterPushDown.isFilterSupported(new Not(new GreaterThan("t", LocalTime.of(12, 0)))));
+
+    // processFilters should put LocalTime filters in the rejected bucket
+    Filter timeFilter = new GreaterThan("t", LocalTime.of(12, 0));
+    Filter intFilter = new GreaterThan("age", 30);
+    Filter[][] result = FilterPushDown.processFilters(new Filter[] {timeFilter, intFilter});
+    assertEquals(1, result[0].length); // accepted: age > 30
+    assertEquals(1, result[1].length); // rejected: t > 12:00
+    assertEquals(intFilter, result[0][0]);
+    assertEquals(timeFilter, result[1][0]);
   }
 }

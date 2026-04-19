@@ -114,6 +114,10 @@ object LanceArrowWriter {
       case (_: DayTimeIntervalType, vector: DurationVector) => new DurationWriter(vector)
       case (CalendarIntervalType, vector: IntervalMonthDayNanoVector) =>
         new IntervalMonthDayNanoWriter(vector)
+      // TimeType is Spark 4.1+ only. Use class name check for cross-version compatibility.
+      case (dt, vector: TimeNanoVector)
+          if dt.getClass.getName == "org.apache.spark.sql.types.TimeType" =>
+        new TimeNanoWriter(vector)
       case (dt, _) =>
         throw new UnsupportedOperationException(s"Unsupported data type: $dt")
     }
@@ -470,5 +474,20 @@ private[arrow] class IntervalMonthDayNanoWriter(val valueVector: IntervalMonthDa
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val interval = input.getInterval(ordinal)
     valueVector.setSafe(count, interval.months, interval.days, interval.microseconds * 1000L)
+  }
+}
+
+/**
+ * Writer for Spark TimeType values to Arrow TimeNanoVector.
+ * Spark 4.1 stores time-of-day internally as nanoseconds since midnight
+ * (via {@code LocalTime.getLong(NANO_OF_DAY)}). Arrow Time(NANOSECOND, 64) also
+ * expects nanoseconds, so the value is written directly without conversion.
+ */
+private[arrow] class TimeNanoWriter(val valueVector: TimeNanoVector)
+  extends LanceArrowFieldWriter {
+  override def setNull(): Unit = {}
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    val nanos = input.getLong(ordinal)
+    valueVector.setSafe(count, nanos)
   }
 }

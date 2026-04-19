@@ -18,6 +18,10 @@ import org.lance.spark.utils.BlobUtils;
 import org.apache.arrow.vector.DateMilliVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.arrow.vector.LargeVarCharVector;
+import org.apache.arrow.vector.TimeMicroVector;
+import org.apache.arrow.vector.TimeMilliVector;
+import org.apache.arrow.vector.TimeNanoVector;
+import org.apache.arrow.vector.TimeSecVector;
 import org.apache.arrow.vector.TimeStampMilliTZVector;
 import org.apache.arrow.vector.TimeStampMilliVector;
 import org.apache.arrow.vector.TimeStampNanoTZVector;
@@ -57,6 +61,7 @@ public class LanceArrowColumnVector extends ColumnVector {
   private Float2Accessor float2Accessor;
   private DateMilliAccessor dateMilliAccessor;
   private TimestampUnitAccessor timestampUnitAccessor;
+  private TimeUnitAccessor timeUnitAccessor;
   private LanceStructAccessor structAccessor;
   private ArrowColumnVector arrowColumnVector;
 
@@ -102,6 +107,18 @@ public class LanceArrowColumnVector extends ColumnVector {
       timestampUnitAccessor = new TimestampUnitAccessor((TimeStampNanoVector) vector, 1L, 1_000L);
     } else if (vector instanceof TimeStampNanoTZVector) {
       timestampUnitAccessor = new TimestampUnitAccessor((TimeStampNanoTZVector) vector, 1L, 1_000L);
+    } else if (vector instanceof TimeNanoVector) {
+      // Spark 4.1 TimeType stores nanos internally; Arrow TimeNano also nanos
+      timeUnitAccessor = new TimeUnitAccessor((TimeNanoVector) vector, 1L, 1L);
+    } else if (vector instanceof TimeMicroVector) {
+      // Arrow TimeMicro stores micros; Spark expects nanos → multiply by 1_000
+      timeUnitAccessor = new TimeUnitAccessor((TimeMicroVector) vector, 1_000L, 1L);
+    } else if (vector instanceof TimeMilliVector) {
+      // Arrow TimeMilli stores millis; Spark expects nanos → multiply by 1_000_000
+      timeUnitAccessor = new TimeUnitAccessor((TimeMilliVector) vector, 1_000_000L, 1L);
+    } else if (vector instanceof TimeSecVector) {
+      // Arrow TimeSec stores seconds; Spark expects nanos → multiply by 1_000_000_000
+      timeUnitAccessor = new TimeUnitAccessor((TimeSecVector) vector, 1_000_000_000L, 1L);
     } else if (vector instanceof DateMilliVector) {
       dateMilliAccessor = new DateMilliAccessor((DateMilliVector) vector);
     } else if (vector.getClass().getName().equals("org.apache.arrow.vector.Float2Vector")) {
@@ -157,6 +174,9 @@ public class LanceArrowColumnVector extends ColumnVector {
     if (timestampUnitAccessor != null) {
       timestampUnitAccessor.close();
     }
+    if (timeUnitAccessor != null) {
+      timeUnitAccessor.close();
+    }
     if (structAccessor != null) {
       structAccessor.close();
     }
@@ -208,6 +228,9 @@ public class LanceArrowColumnVector extends ColumnVector {
     }
     if (timestampUnitAccessor != null) {
       return timestampUnitAccessor.getNullCount() > 0;
+    }
+    if (timeUnitAccessor != null) {
+      return timeUnitAccessor.getNullCount() > 0;
     }
     if (structAccessor != null) {
       return structAccessor.getNullCount() > 0;
@@ -262,6 +285,9 @@ public class LanceArrowColumnVector extends ColumnVector {
     if (timestampUnitAccessor != null) {
       return timestampUnitAccessor.getNullCount();
     }
+    if (timeUnitAccessor != null) {
+      return timeUnitAccessor.getNullCount();
+    }
     if (structAccessor != null) {
       return structAccessor.getNullCount();
     }
@@ -314,6 +340,9 @@ public class LanceArrowColumnVector extends ColumnVector {
     }
     if (timestampUnitAccessor != null) {
       return timestampUnitAccessor.isNullAt(rowId);
+    }
+    if (timeUnitAccessor != null) {
+      return timeUnitAccessor.isNullAt(rowId);
     }
     if (structAccessor != null) {
       return structAccessor.isNullAt(rowId);
@@ -375,6 +404,9 @@ public class LanceArrowColumnVector extends ColumnVector {
     }
     if (timestampUnitAccessor != null) {
       return timestampUnitAccessor.getLong(rowId);
+    }
+    if (timeUnitAccessor != null) {
+      return timeUnitAccessor.getLong(rowId);
     }
     if (arrowColumnVector != null) {
       return arrowColumnVector.getLong(rowId);

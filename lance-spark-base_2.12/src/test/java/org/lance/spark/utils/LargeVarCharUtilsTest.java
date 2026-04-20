@@ -27,23 +27,27 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Unit tests for {@link LargeVarCharUtils}. */
+/**
+ * Unit tests for {@link LargeVarCharUtils}.
+ *
+ * <p>Test inputs use the literal key/value strings rather than the exposed constants, so a rename
+ * of {@code ARROW_LARGE_VAR_CHAR_KEY} / {@code ARROW_LARGE_VAR_CHAR_VALUE} will break these tests.
+ * End-to-end validation against real lance data lives in {@link
+ * org.lance.spark.utils.SchemaConverterTest} and the LanceArrow suites.
+ */
 public class LargeVarCharUtilsTest {
+
+  private static final String LVC_KEY = "arrow:large-var-char";
 
   @Test
   public void testIsLargeVarCharSparkFieldNullField() {
     assertFalse(LargeVarCharUtils.isLargeVarCharSparkField(null));
   }
 
+  /** Valid metadata on a non-String column must still return false — guards the type filter. */
   @Test
   public void testIsLargeVarCharSparkFieldNonStringType() {
-    // Provide valid metadata so the type-check branch (not the metadata-absent branch) is exercised
-    Metadata metadata =
-        new MetadataBuilder()
-            .putString(
-                LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY,
-                LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE)
-            .build();
+    Metadata metadata = new MetadataBuilder().putString(LVC_KEY, "true").build();
     StructField field = new StructField("col", DataTypes.IntegerType, true, metadata);
     assertFalse(LargeVarCharUtils.isLargeVarCharSparkField(field));
   }
@@ -63,30 +67,14 @@ public class LargeVarCharUtilsTest {
 
   @Test
   public void testIsLargeVarCharSparkFieldWrongValue() {
-    Metadata metadata =
-        new MetadataBuilder()
-            .putString(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "false")
-            .build();
+    Metadata metadata = new MetadataBuilder().putString(LVC_KEY, "false").build();
     StructField field = new StructField("col", DataTypes.StringType, true, metadata);
     assertFalse(LargeVarCharUtils.isLargeVarCharSparkField(field));
   }
 
   @Test
-  public void testIsLargeVarCharSparkFieldValid() {
-    Metadata metadata =
-        new MetadataBuilder()
-            .putString(
-                LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY,
-                LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE)
-            .build();
-    StructField field = new StructField("col", DataTypes.StringType, true, metadata);
-    assertTrue(LargeVarCharUtils.isLargeVarCharSparkField(field));
-  }
-
-  @Test
   public void testIsLargeVarCharSparkFieldCaseInsensitive() {
-    Metadata metadata =
-        new MetadataBuilder().putString(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "TRUE").build();
+    Metadata metadata = new MetadataBuilder().putString(LVC_KEY, "TRUE").build();
     StructField field = new StructField("col", DataTypes.StringType, true, metadata);
     assertTrue(LargeVarCharUtils.isLargeVarCharSparkField(field));
   }
@@ -113,24 +101,15 @@ public class LargeVarCharUtilsTest {
   @Test
   public void testIsLargeVarCharArrowFieldWrongValue() {
     Map<String, String> meta = new HashMap<>();
-    meta.put(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "false");
+    meta.put(LVC_KEY, "false");
     Field field = new Field("col", new FieldType(true, new ArrowType.Utf8(), null, meta), null);
     assertFalse(LargeVarCharUtils.isLargeVarCharArrowField(field));
   }
 
   @Test
-  public void testIsLargeVarCharArrowFieldValid() {
-    Map<String, String> meta = new HashMap<>();
-    meta.put(
-        LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE);
-    Field field = new Field("col", new FieldType(true, new ArrowType.Utf8(), null, meta), null);
-    assertTrue(LargeVarCharUtils.isLargeVarCharArrowField(field));
-  }
-
-  @Test
   public void testIsLargeVarCharArrowFieldCaseInsensitive() {
     Map<String, String> meta = new HashMap<>();
-    meta.put(LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY, "True");
+    meta.put(LVC_KEY, "True");
     Field field = new Field("col", new FieldType(true, new ArrowType.Utf8(), null, meta), null);
     assertTrue(LargeVarCharUtils.isLargeVarCharArrowField(field));
   }

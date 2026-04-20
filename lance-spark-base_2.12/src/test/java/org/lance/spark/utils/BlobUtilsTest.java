@@ -27,8 +27,20 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Unit tests for {@link BlobUtils}. */
+/**
+ * Unit tests for {@link BlobUtils}.
+ *
+ * <p>Test inputs use the literal key/value strings rather than the constants exposed by {@link
+ * BlobUtils}, so a rename of {@code LANCE_ENCODING_BLOB_KEY} or {@code LANCE_ENCODING_BLOB_VALUE}
+ * will break these tests — catching accidental drift from the wire contract.
+ *
+ * <p>Upstream convention changes (lance-core itself switching to a different key) are an
+ * integration-level concern covered by {@link org.lance.spark.BaseBlobCreateTableTest} and {@link
+ * org.lance.spark.utils.SchemaConverterTest}, which round-trip through real data.
+ */
 public class BlobUtilsTest {
+
+  private static final String BLOB_KEY = "lance-encoding:blob";
 
   @Test
   public void testIsBlobSparkFieldNullField() {
@@ -50,26 +62,17 @@ public class BlobUtilsTest {
 
   @Test
   public void testIsBlobSparkFieldWrongValue() {
-    Metadata metadata =
-        new MetadataBuilder().putString(BlobUtils.LANCE_ENCODING_BLOB_KEY, "false").build();
+    Metadata metadata = new MetadataBuilder().putString(BLOB_KEY, "false").build();
     StructField field = new StructField("col", DataTypes.BinaryType, true, metadata);
     assertFalse(BlobUtils.isBlobSparkField(field));
   }
 
-  @Test
-  public void testIsBlobSparkFieldValid() {
-    Metadata metadata =
-        new MetadataBuilder()
-            .putString(BlobUtils.LANCE_ENCODING_BLOB_KEY, BlobUtils.LANCE_ENCODING_BLOB_VALUE)
-            .build();
-    StructField field = new StructField("col", DataTypes.BinaryType, true, metadata);
-    assertTrue(BlobUtils.isBlobSparkField(field));
-  }
-
+  /**
+   * Positive match via mixed case — guards against the matcher being tightened to {@code .equals}.
+   */
   @Test
   public void testIsBlobSparkFieldCaseInsensitive() {
-    Metadata metadata =
-        new MetadataBuilder().putString(BlobUtils.LANCE_ENCODING_BLOB_KEY, "TRUE").build();
+    Metadata metadata = new MetadataBuilder().putString(BLOB_KEY, "TRUE").build();
     StructField field = new StructField("col", DataTypes.BinaryType, true, metadata);
     assertTrue(BlobUtils.isBlobSparkField(field));
   }
@@ -96,23 +99,15 @@ public class BlobUtilsTest {
   @Test
   public void testIsBlobArrowFieldWrongValue() {
     Map<String, String> meta = new HashMap<>();
-    meta.put(BlobUtils.LANCE_ENCODING_BLOB_KEY, "false");
+    meta.put(BLOB_KEY, "false");
     Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);
     assertFalse(BlobUtils.isBlobArrowField(field));
   }
 
   @Test
-  public void testIsBlobArrowFieldValid() {
-    Map<String, String> meta = new HashMap<>();
-    meta.put(BlobUtils.LANCE_ENCODING_BLOB_KEY, BlobUtils.LANCE_ENCODING_BLOB_VALUE);
-    Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);
-    assertTrue(BlobUtils.isBlobArrowField(field));
-  }
-
-  @Test
   public void testIsBlobArrowFieldCaseInsensitive() {
     Map<String, String> meta = new HashMap<>();
-    meta.put(BlobUtils.LANCE_ENCODING_BLOB_KEY, "True");
+    meta.put(BLOB_KEY, "True");
     Field field = new Field("col", new FieldType(true, new ArrowType.Binary(), null, meta), null);
     assertTrue(BlobUtils.isBlobArrowField(field));
   }

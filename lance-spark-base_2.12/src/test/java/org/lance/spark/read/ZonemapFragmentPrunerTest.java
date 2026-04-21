@@ -563,7 +563,7 @@ public class ZonemapFragmentPrunerTest {
     values.put(0, "east");
     values.put(1, "west");
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
 
     InternalRow row0 = info.partitionKeyForFragment(0);
     assertNotNull(row0);
@@ -583,7 +583,7 @@ public class ZonemapFragmentPrunerTest {
     values.put(0, 2023L);
     values.put(1, 2024L);
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo("year", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("year", values);
 
     InternalRow row0 = info.partitionKeyForFragment(0);
     assertEquals(2023L, row0.getLong(0));
@@ -597,7 +597,7 @@ public class ZonemapFragmentPrunerTest {
     Map<Integer, Comparable<?>> values = new HashMap<>();
     values.put(0, "east");
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
 
     InternalRow row = info.partitionKeyForFragment(99);
     assertNotNull(row);
@@ -610,7 +610,7 @@ public class ZonemapFragmentPrunerTest {
     values.put(0, "east");
     values.put(1, "west");
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
 
     java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
     java.io.ObjectOutputStream oos = new java.io.ObjectOutputStream(baos);
@@ -622,9 +622,9 @@ public class ZonemapFragmentPrunerTest {
     ZonemapFragmentPruner.PartitionInfo deserialized =
         (ZonemapFragmentPruner.PartitionInfo) ois.readObject();
 
-    assertEquals("region", deserialized.getColumnName());
-    assertEquals("east", deserialized.getFragmentPartitionValues().get(0));
-    assertEquals("west", deserialized.getFragmentPartitionValues().get(1));
+    assertEquals(java.util.Collections.singletonList("region"), deserialized.getColumnNames());
+    assertEquals("east", deserialized.getFragmentPartitionKeys().get(0)[0]);
+    assertEquals("west", deserialized.getFragmentPartitionKeys().get(1)[0]);
   }
 
   @Test
@@ -632,10 +632,10 @@ public class ZonemapFragmentPrunerTest {
     Map<Integer, Comparable<?>> values = new HashMap<>();
     values.put(0, "east");
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
 
     assertThrows(
         UnsupportedOperationException.class,
-        () -> info.getFragmentPartitionValues().put(1, "west"));
+        () -> info.getFragmentPartitionKeys().put(1, new Comparable<?>[] {"west"}));
   }
 }

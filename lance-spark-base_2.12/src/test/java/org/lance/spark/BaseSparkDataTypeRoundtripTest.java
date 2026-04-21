@@ -13,6 +13,10 @@
  */
 package org.lance.spark;
 
+import org.apache.spark.ml.linalg.DenseVector;
+import org.apache.spark.ml.linalg.SparseVector;
+import org.apache.spark.ml.linalg.Vector;
+import org.apache.spark.ml.linalg.VectorUDT;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -401,5 +405,77 @@ public abstract class BaseSparkDataTypeRoundtripTest {
     assertArrayEquals(b0, (byte[]) out.get(0).get(1));
     assertArrayEquals(b1, (byte[]) out.get(1).get(1));
     assertTrue(out.get(2).isNullAt(1));
+  }
+
+  // ---------------- UDT (UserDefinedType) ----------------
+
+  /**
+   * VectorUDT is MLlib's {@link org.apache.spark.ml.linalg.VectorUDT} — the most common UDT in the
+   * Spark ecosystem (used for ML feature vectors). Its {@code sqlType} is a 4-field StructType:
+   * {@code (type: ByteType, size: IntegerType, indices: ArrayType(IntegerType), values:
+   * ArrayType(DoubleType))}.
+   *
+   * <p>Arrow has no UDT concept, so the read-back schema loses the UDT wrapper and returns a plain
+   * {@code StructType}. Data values are intact and can be reconstructed via {@link
+   * VectorUDT#deserialize(Object)}.
+   *
+   * <p>Note: a null VectorUDT row is intentionally omitted. VectorUDT's sqlType marks the inner
+   * {@code type} field as non-nullable; when the parent struct is null, the StructWriter writes
+   * null placeholders to all children — including non-nullable ones — and Lance's native writer
+   * rejects the batch. This is a known limitation of structs with non-nullable children.
+   */
+  @Test
+  public void testVectorUDTRoundtrip() {
+    VectorUDT vectorUDT = new VectorUDT();
+    StructType schema =
+        new StructType().add("id", DataTypes.IntegerType, false).add("vec", vectorUDT, true);
+
+    Vector dense = new DenseVector(new double[] {1.0, 2.0, 3.0});
+    Vector sparse = new SparseVector(3, new int[] {0, 2}, new double[] {1.0, 3.0});
+
+    List<Row> data = Arrays.asList(RowFactory.create(0, dense), RowFactory.create(1, sparse));
+
+    Dataset<Row> result = writeAndRead(schema, data, "vector_udt");
+    List<Row> out = result.orderBy("id").collectAsList();
+
+    assertEquals(2, out.size());
+
+    // Read-back schema loses the UDT wrapper — the column is a plain struct with fields:
+    // (type: byte, size: int, indices: array<int>, values: array<double>).
+    // Reconstruct vectors manually since VectorUDT.deserialize() expects InternalRow.
+    assertEquals(dense, reconstructVector(out.get(0).getStruct(1)));
+    assertEquals(sparse, reconstructVector(out.get(1).getStruct(1)));
+  }
+
+  /**
+   * Reconstruct an MLlib {@link Vector} from the struct row returned by Lance read-back. The struct
+   * follows VectorUDT's sqlType: (type: byte, size: int, indices: array&lt;int&gt;, values:
+   * array&lt;double&gt;). Type 0 = sparse, type 1 = dense.
+   */
+  private static Vector reconstructVector(Row struct) {
+    byte type = struct.getByte(0);
+    if (type == 1) {
+      // Dense vector — values at index 3
+      List<Double> vals = struct.getList(3);
+      double[] arr = new double[vals.size()];
+      for (int i = 0; i < arr.length; i++) {
+        arr[i] = vals.get(i);
+      }
+      return new DenseVector(arr);
+    } else {
+      // Sparse vector — size at 1, indices at 2, values at 3
+      int size = struct.getInt(1);
+      List<Integer> idxList = struct.getList(2);
+      List<Double> valList = struct.getList(3);
+      int[] indices = new int[idxList.size()];
+      double[] values = new double[valList.size()];
+      for (int i = 0; i < indices.length; i++) {
+        indices[i] = idxList.get(i);
+      }
+      for (int i = 0; i < values.length; i++) {
+        values[i] = valList.get(i);
+      }
+      return new SparseVector(size, indices, values);
+    }
   }
 }

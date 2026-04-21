@@ -28,6 +28,12 @@
             <scope>provided</scope>
         </dependency>
         <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-mllib_${scala.compat.version}</artifactId>
+            <version>${spark34.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.lance</groupId>
             <artifactId>lance-spark-base_${scala.compat.version}</artifactId>
             <version>${lance-spark.version}</version>

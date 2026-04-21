@@ -109,6 +109,7 @@ object LanceArrowWriter {
         new LargeStringWriter(vector)
       case (BinaryType, vector: VarBinaryVector) => new BinaryWriter(vector)
       case (BinaryType, vector: LargeVarBinaryVector) => new LargeBinaryWriter(vector, resolver)
+      case (BinaryType, vector: FixedSizeBinaryVector) => new FixedSizeBinaryWriter(vector)
       case (DateType, vector: DateDayVector) => new DateWriter(vector)
       case (DateType, vector: DateMilliVector) => new DateMilliWriter(vector)
       case (TimestampType, vector: TimeStampMicroTZVector) => new TimestampWriter(vector)
@@ -361,6 +362,17 @@ private[arrow] class BinaryWriter(val valueVector: VarBinaryVector) extends Lanc
 
 // LargeBinaryWriter (BinaryType -> LargeVarBinaryVector) is a custom, non-trivial writer that also
 // resolves blob references flowing through a shuffle; it lives in its own file LargeBinaryWriter.scala.
+
+private[arrow] class FixedSizeBinaryWriter(val valueVector: FixedSizeBinaryVector)
+  extends LanceArrowFieldWriter {
+  override def setNull(): Unit = {
+    valueVector.setNull(count)
+  }
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    val bytes = input.getBinary(ordinal)
+    valueVector.setSafe(count, bytes)
+  }
+}
 
 private[arrow] class DateWriter(val valueVector: DateDayVector) extends LanceArrowFieldWriter {
   override def setNull(): Unit = {}

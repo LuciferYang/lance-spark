@@ -30,7 +30,7 @@ import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.{SparkException, SparkUnsupportedOperationException}
 import org.apache.spark.sql.types._
 import org.lance.spark.LanceConstant
-import org.lance.spark.utils.{BlobUtils, DateMilliUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
+import org.lance.spark.utils.{BlobUtils, DateMilliUtils, FixedSizeBinaryUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -46,6 +46,8 @@ object LanceArrowUtils {
   val ENCODING_BLOB = BlobUtils.LANCE_ENCODING_BLOB_KEY
   val ARROW_LARGE_VAR_CHAR_KEY = LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY
   val ARROW_DATE_MILLISECOND_KEY = DateMilliUtils.ARROW_DATE_MILLISECOND_KEY
+  val ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY =
+    FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY
 
   // Namespaced keys used to embed child Spark Metadata on a parent StructField when the
   // child sits inside an ArrayType/MapType — Spark has no per-element metadata slot of its
@@ -212,6 +214,10 @@ object LanceArrowUtils {
         builder.putString(ARROW_LARGE_VAR_CHAR_KEY, LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE)
       case date: ArrowType.Date if date.getUnit == DateUnit.MILLISECOND =>
         builder.putString(ARROW_DATE_MILLISECOND_KEY, DateMilliUtils.ARROW_DATE_MILLISECOND_VALUE)
+      case fsb: ArrowType.FixedSizeBinary =>
+        // Preserve FixedSizeBinary byte width so a subsequent write reproduces
+        // FixedSizeBinary(n) instead of falling back to variable-length Binary.
+        builder.putLong(ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY, fsb.getByteWidth.toLong)
       case _ =>
     }
   }
@@ -403,6 +409,14 @@ object LanceArrowUtils {
         val fieldType = new FieldType(
           nullable,
           new ArrowType.Date(DateUnit.MILLISECOND),
+          null,
+          meta.asJava)
+        new Field(name, fieldType, Seq.empty[Field].asJava)
+      case BinaryType if FixedSizeBinaryUtils.hasFixedSizeBinaryMetadata(metadata) =>
+        val byteWidth = metadata.getLong(ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY).toInt
+        val fieldType = new FieldType(
+          nullable,
+          new ArrowType.FixedSizeBinary(byteWidth),
           null,
           meta.asJava)
         new Field(name, fieldType, Seq.empty[Field].asJava)

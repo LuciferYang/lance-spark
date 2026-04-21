@@ -90,6 +90,7 @@ object LanceArrowWriter {
       case (StringType, vector: LargeVarCharVector) => new LargeStringWriter(vector)
       case (BinaryType, vector: VarBinaryVector) => new BinaryWriter(vector)
       case (BinaryType, vector: LargeVarBinaryVector) => new LargeBinaryWriter(vector)
+      case (BinaryType, vector: FixedSizeBinaryVector) => new FixedSizeBinaryWriter(vector)
       case (DateType, vector: DateDayVector) => new DateWriter(vector)
       case (TimestampType, vector: TimeStampMicroTZVector) => new TimestampWriter(vector)
       case (TimestampNTZType, vector: TimeStampMicroVector) => new TimestampNTZWriter(vector)
@@ -314,6 +315,17 @@ private[arrow] class BinaryWriter(val valueVector: VarBinaryVector) extends Lanc
 private[arrow] class LargeBinaryWriter(val valueVector: LargeVarBinaryVector)
   extends LanceArrowFieldWriter {
   override def setNull(): Unit = {}
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    val bytes = input.getBinary(ordinal)
+    valueVector.setSafe(count, bytes)
+  }
+}
+
+private[arrow] class FixedSizeBinaryWriter(val valueVector: FixedSizeBinaryVector)
+  extends LanceArrowFieldWriter {
+  override def setNull(): Unit = {
+    valueVector.setNull(count)
+  }
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val bytes = input.getBinary(ordinal)
     valueVector.setSafe(count, bytes)

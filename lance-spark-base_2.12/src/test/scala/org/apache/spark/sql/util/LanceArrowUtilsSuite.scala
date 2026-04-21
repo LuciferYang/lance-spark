@@ -267,4 +267,59 @@ class LanceArrowUtilsSuite extends AnyFunSuite {
     val largeField = arrowSchema.findField("large_string")
     assert(largeField.getType === ArrowType.LargeUtf8.INSTANCE)
   }
+
+  test("FixedSizeBinary metadata produces FixedSizeBinary arrow type") {
+    import org.lance.spark.utils.FixedSizeBinaryUtils
+
+    val fixedSizeBinaryMetadata = new MetadataBuilder()
+      .putLong(
+        FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY,
+        16)
+      .build()
+
+    val schema = new StructType()
+      .add("regular_binary", BinaryType, nullable = true)
+      .add("fixed_binary", BinaryType, nullable = true, fixedSizeBinaryMetadata)
+
+    val arrowSchema = LanceArrowUtils.toArrowSchema(schema, "UTC", false)
+
+    // Regular binary should use Binary
+    val regularField = arrowSchema.findField("regular_binary")
+    assert(regularField.getType === ArrowType.Binary.INSTANCE)
+
+    // Fixed binary with metadata should use FixedSizeBinary(16)
+    val fixedField = arrowSchema.findField("fixed_binary")
+    assert(fixedField.getType.isInstanceOf[ArrowType.FixedSizeBinary])
+    assert(fixedField.getType.asInstanceOf[ArrowType.FixedSizeBinary].getByteWidth === 16)
+  }
+
+  test("FixedSizeBinary roundtrip preserves byte width") {
+    import org.lance.spark.utils.FixedSizeBinaryUtils
+
+    // Simulate reading: create an Arrow FixedSizeBinary field -> convert to Spark schema
+    val arrowField = new Field(
+      "hash",
+      new FieldType(true, new ArrowType.FixedSizeBinary(32), null, null),
+      java.util.Collections.emptyList())
+    val arrowSchema = new org.apache.arrow.vector.types.pojo.Schema(
+      java.util.Arrays.asList(arrowField))
+
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrowSchema)
+    val hashField = sparkSchema("hash")
+
+    // Data type is BinaryType (Spark has no FixedSizeBinary)
+    assert(hashField.dataType === BinaryType)
+
+    // But metadata preserves the byte width
+    assert(hashField.metadata.contains(FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY))
+    assert(hashField.metadata.getLong(
+      FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY) === 32)
+
+    // Simulate writing: convert Spark schema back to Arrow
+    val roundtripArrowSchema = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val roundtripField = roundtripArrowSchema.findField("hash")
+
+    assert(roundtripField.getType.isInstanceOf[ArrowType.FixedSizeBinary])
+    assert(roundtripField.getType.asInstanceOf[ArrowType.FixedSizeBinary].getByteWidth === 32)
+  }
 }

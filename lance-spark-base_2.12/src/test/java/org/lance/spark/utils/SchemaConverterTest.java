@@ -489,6 +489,40 @@ public class SchemaConverterTest {
   }
 
   @Test
+  public void testProcessSchemaAddsFixedSizeBinaryMetadata() {
+    StructType schema =
+        new StructType(
+            new StructField[] {
+              DataTypes.createStructField("id", DataTypes.IntegerType, false),
+              DataTypes.createStructField("hash", DataTypes.BinaryType, true),
+            });
+    Map<String, String> properties = new HashMap<>();
+    properties.put("hash.arrow.fixed-size-binary.byte-width", "16");
+
+    StructType result = SchemaConverter.processSchemaWithProperties(schema, properties);
+    StructField hashField = result.apply("hash");
+    assertTrue(
+        hashField.metadata().contains(FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY));
+    assertEquals(
+        16L,
+        hashField.metadata().getLong(FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY));
+  }
+
+  @Test
+  public void testFixedSizeBinaryMetadataRejectsNonBinaryType() {
+    StructType schema =
+        new StructType(
+            new StructField[] {
+              DataTypes.createStructField("name", DataTypes.StringType, true),
+            });
+    Map<String, String> properties = new HashMap<>();
+    properties.put("name.arrow.fixed-size-binary.byte-width", "16");
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> SchemaConverter.processSchemaWithProperties(schema, properties));
+  }
+
+  @Test
   public void testNegativeCompressionLevelThrows() {
     StructType schema =
         new StructType(

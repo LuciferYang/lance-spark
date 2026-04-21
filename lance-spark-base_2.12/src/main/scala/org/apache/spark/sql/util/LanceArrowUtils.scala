@@ -31,7 +31,7 @@ import org.apache.spark.sql.types._
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.JsonAST.{JObject, JString}
 import org.lance.spark.LanceConstant
-import org.lance.spark.utils.{BlobUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
+import org.lance.spark.utils.{BlobUtils, FixedSizeBinaryUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -43,6 +43,8 @@ object LanceArrowUtils {
   val ARROW_FLOAT16_KEY = Float16Utils.ARROW_FLOAT16_KEY
   val ENCODING_BLOB = BlobUtils.LANCE_ENCODING_BLOB_KEY
   val ARROW_LARGE_VAR_CHAR_KEY = LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY
+  val ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY =
+    FixedSizeBinaryUtils.ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY
 
   def fromArrowField(field: Field): DataType = {
     field.getType match {
@@ -156,6 +158,12 @@ object LanceArrowUtils {
           // Preserve LargeUtf8 type info so subsequent writes use LargeVarCharVector
           new MetadataBuilder()
             .putString(ARROW_LARGE_VAR_CHAR_KEY, "true")
+            .build()
+        case fsb: ArrowType.FixedSizeBinary =>
+          // Preserve FixedSizeBinary byte width so subsequent writes reproduce
+          // FixedSizeBinary(n) instead of falling back to variable-length Binary
+          new MetadataBuilder()
+            .putLong(ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY, fsb.getByteWidth)
             .build()
         case _ => Metadata.fromJObject(
             JObject(field.getMetadata.asScala.map { case (k, v) => (k, JString(v)) }.toList))
@@ -289,6 +297,14 @@ object LanceArrowUtils {
             largeVarTypes = largeVarTypes)).asJava)
       case udt: UserDefinedType[_] =>
         toArrowField(name, udt.sqlType, nullable, timeZoneId, largeVarTypes = largeVarTypes)
+      case BinaryType if FixedSizeBinaryUtils.hasFixedSizeBinaryMetadata(metadata) =>
+        val byteWidth = metadata.getLong(ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY).toInt
+        val fieldType = new FieldType(
+          nullable,
+          new ArrowType.FixedSizeBinary(byteWidth),
+          null,
+          meta.asJava)
+        new Field(name, fieldType, Seq.empty[Field].asJava)
       case dataType =>
         val fieldType =
           new FieldType(nullable, toArrowType(dataType, timeZoneId, large, name), null, meta.asJava)

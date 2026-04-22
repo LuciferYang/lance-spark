@@ -130,6 +130,78 @@ public class LanceScanBuilderTest {
     assertEquals(0, builder.pushedFilters().length);
   }
 
+  // --- DFP runtime filtering (Phase 1) ---
+
+  @Test
+  public void testBuildSucceedsWithRuntimeFilteringEnabled() {
+    // Fixture has no ZONEMAP indexes, so the expanded-loading branch is a no-op at the data level;
+    // this test guards that the Phase 1 code path in build() compiles and runs cleanly under
+    // enabled=true without affecting the resulting Scan.
+    java.util.Map<String, String> opts = new java.util.HashMap<>();
+    opts.put(LanceSparkReadOptions.CONFIG_RUNTIME_FILTERING_ENABLED, "true");
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.from(opts, TestUtils.TestTable1Config.datasetUri);
+    LanceScanBuilder builder =
+        new LanceScanBuilder(
+            TEST_SCHEMA,
+            options,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap(),
+            Collections.emptyMap());
+    Filter[] filters = new Filter[] {new GreaterThan("x", 1L)};
+    builder.pushFilters(filters);
+    Scan scan = builder.build();
+    assertEquals(TEST_SCHEMA, scan.readSchema());
+    assertTrue(options.isRuntimeFilteringEnabled());
+  }
+
+  @Test
+  public void testBuildSucceedsWithRuntimeFilteringDisabled() {
+    // Verifies the Phase 1 kill-switch: when enabled=false, build() takes the legacy filter-only
+    // loading path (no expansion to all ZONEMAP-indexed columns) and produces a working Scan.
+    java.util.Map<String, String> opts = new java.util.HashMap<>();
+    opts.put(LanceSparkReadOptions.CONFIG_RUNTIME_FILTERING_ENABLED, "false");
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.from(opts, TestUtils.TestTable1Config.datasetUri);
+    LanceScanBuilder builder =
+        new LanceScanBuilder(
+            TEST_SCHEMA,
+            options,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap(),
+            Collections.emptyMap());
+    Filter[] filters = new Filter[] {new GreaterThan("x", 1L)};
+    builder.pushFilters(filters);
+    Scan scan = builder.build();
+    assertEquals(TEST_SCHEMA, scan.readSchema());
+    assertFalse(options.isRuntimeFilteringEnabled());
+  }
+
+  @Test
+  public void testBuildRespectsZeroMaxColumnsCap() {
+    // When max.columns=0, no ZONEMAP-indexed columns can be added beyond the filter baseline.
+    // On the no-index fixture this is still a no-op; the test guards that the cap branch runs
+    // cleanly and does not throw for a zero budget.
+    java.util.Map<String, String> opts = new java.util.HashMap<>();
+    opts.put(LanceSparkReadOptions.CONFIG_RUNTIME_FILTERING_ENABLED, "true");
+    opts.put(LanceSparkReadOptions.CONFIG_RUNTIME_FILTERING_MAX_COLUMNS, "0");
+    LanceSparkReadOptions options =
+        LanceSparkReadOptions.from(opts, TestUtils.TestTable1Config.datasetUri);
+    LanceScanBuilder builder =
+        new LanceScanBuilder(
+            TEST_SCHEMA,
+            options,
+            Collections.emptyMap(),
+            null,
+            Collections.emptyMap(),
+            Collections.emptyMap());
+    Scan scan = builder.build();
+    assertEquals(TEST_SCHEMA, scan.readSchema());
+    assertEquals(0, options.getRuntimeFilteringMaxColumns());
+  }
+
   @Test
   public void testPushFiltersWithNestedArrayOfStruct() {
     // Filters on non-Array<Struct> columns should be pushed down normally.
@@ -298,6 +370,39 @@ public class LanceScanBuilderTest {
     // Metadata-based COUNT(*) without filters returns LanceLocalScan
     assertNotNull(scan);
     assertInstanceOf(LanceLocalScan.class, scan);
+  }
+
+  @Test
+  public void testEstimateZonemapBytesAccountsForStringMinMax() {
+    // Regression: previously the estimator used a fixed 96 bytes per zone, which was accurate
+    // only for numeric boxed primitives. A string-keyed ZONEMAP index would silently bypass the
+    // byte cap because each ZoneStats carries two String references (min, max) whose referent
+    // size can be hundreds of bytes. Now the estimator samples the first zone's min/max and
+    // adds the variable-length portion.
+    String longMin = "a".repeat(200);
+    String longMax = "z".repeat(200);
+    java.util.List<org.lance.index.scalar.ZoneStats> stringZones =
+        java.util.Arrays.asList(
+            new org.lance.index.scalar.ZoneStats(0, 0, 1024, longMin, longMax, 0),
+            new org.lance.index.scalar.ZoneStats(1, 0, 1024, longMin, longMax, 0),
+            new org.lance.index.scalar.ZoneStats(2, 0, 1024, longMin, longMax, 0));
+    java.util.Map<String, java.util.List<org.lance.index.scalar.ZoneStats>> stringStats =
+        Collections.singletonMap("description", stringZones);
+
+    // Per zone: 96 base + (24 + 2*200) for min + (24 + 2*200) for max = 96 + 848 = 944 bytes
+    // Expected total: 16 (map overhead) + 3 * 944 = 2848 bytes
+    long stringEstimate = LanceScanBuilder.estimateZonemapBytes(stringStats);
+    assertEquals(16L + 3L * 944L, stringEstimate);
+
+    // Numeric column stays at the 96-byte base per zone — no String min/max penalty.
+    java.util.List<org.lance.index.scalar.ZoneStats> numericZones =
+        java.util.Arrays.asList(
+            new org.lance.index.scalar.ZoneStats(0, 0, 1024, 1L, 100L, 0),
+            new org.lance.index.scalar.ZoneStats(1, 0, 1024, 1L, 100L, 0),
+            new org.lance.index.scalar.ZoneStats(2, 0, 1024, 1L, 100L, 0));
+    java.util.Map<String, java.util.List<org.lance.index.scalar.ZoneStats>> numericStats =
+        Collections.singletonMap("order_id", numericZones);
+    assertEquals(16L + 3L * 96L, LanceScanBuilder.estimateZonemapBytes(numericStats));
   }
 
   /** Minimal SortOrder implementation for testing pushTopN. */

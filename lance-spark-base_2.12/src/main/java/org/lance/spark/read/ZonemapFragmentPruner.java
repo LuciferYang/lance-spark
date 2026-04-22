@@ -29,6 +29,8 @@ import org.apache.spark.sql.sources.LessThan;
 import org.apache.spark.sql.sources.LessThanOrEqual;
 import org.apache.spark.sql.sources.Not;
 import org.apache.spark.sql.sources.Or;
+import org.apache.spark.sql.types.DataType;
+import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.unsafe.types.UTF8String;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -343,30 +345,42 @@ public final class ZonemapFragmentPruner {
   }
 
   /**
-   * Result of partition detection: the ordered list of partition column names and a map from
-   * fragment ID to the partition tuple (one value per declared column, in declaration order).
+   * Result of partition detection: the ordered list of partition column names, a parallel list of
+   * Spark {@link DataType}s (used to encode each fragment's tuple into an {@link InternalRow}), and
+   * a map from fragment ID to the partition tuple (one value per declared column, in declaration
+   * order).
    *
-   * <p>Width invariants (enforced by the constructor): every tuple has length {@code
-   * columnNames.size()}; column names are distinct and non-empty.
+   * <p>Width invariants (enforced by the constructor): {@code columnTypes.size()} equals {@code
+   * columnNames.size()}; every tuple has length {@code columnNames.size()}; column names are
+   * distinct and non-empty.
    */
   public static final class PartitionInfo implements Serializable {
+    // Bumped from the single-column shape (1L on upstream main): adds columnTypes and uses
+    // tuple storage (Map<Integer, Comparable<?>[]>) for multi-column type-aware encoding.
     private static final long serialVersionUID = 2L;
 
     private final List<String> columnNames;
+    private final List<DataType> columnTypes;
     private final Map<Integer, Comparable<?>[]> fragmentPartitionKeys;
     private final boolean softCapped;
 
     public PartitionInfo(
-        List<String> columnNames, Map<Integer, Comparable<?>[]> fragmentPartitionKeys) {
-      this(columnNames, fragmentPartitionKeys, false);
+        List<String> columnNames,
+        List<DataType> columnTypes,
+        Map<Integer, Comparable<?>[]> fragmentPartitionKeys) {
+      this(columnNames, columnTypes, fragmentPartitionKeys, false);
     }
 
     public PartitionInfo(
         List<String> columnNames,
+        List<DataType> columnTypes,
         Map<Integer, Comparable<?>[]> fragmentPartitionKeys,
         boolean softCapped) {
       if (columnNames == null || columnNames.isEmpty()) {
         throw new IllegalArgumentException("columnNames must be non-empty");
+      }
+      if (columnTypes == null || columnTypes.size() != columnNames.size()) {
+        throw new IllegalArgumentException("columnTypes must have the same size as columnNames");
       }
       if (new HashSet<>(columnNames).size() != columnNames.size()) {
         throw new IllegalArgumentException("columnNames must be distinct: " + columnNames);
@@ -382,6 +396,7 @@ public final class ZonemapFragmentPruner {
         copy.put(e.getKey(), tuple.clone());
       }
       this.columnNames = Collections.unmodifiableList(new java.util.ArrayList<>(columnNames));
+      this.columnTypes = Collections.unmodifiableList(new java.util.ArrayList<>(columnTypes));
       this.fragmentPartitionKeys = Collections.unmodifiableMap(copy);
       this.softCapped = softCapped;
     }
@@ -391,16 +406,21 @@ public final class ZonemapFragmentPruner {
      * and delegates to the list-form constructor.
      */
     public static PartitionInfo forSingleColumn(
-        String columnName, Map<Integer, Comparable<?>> valueByFragment) {
+        String columnName, DataType columnType, Map<Integer, Comparable<?>> valueByFragment) {
       Map<Integer, Comparable<?>[]> tupleMap = new HashMap<>();
       for (Map.Entry<Integer, Comparable<?>> e : valueByFragment.entrySet()) {
         tupleMap.put(e.getKey(), new Comparable<?>[] {e.getValue()});
       }
-      return new PartitionInfo(Collections.singletonList(columnName), tupleMap);
+      return new PartitionInfo(
+          Collections.singletonList(columnName), Collections.singletonList(columnType), tupleMap);
     }
 
     public List<String> getColumnNames() {
       return columnNames;
+    }
+
+    public List<DataType> getColumnTypes() {
+      return columnTypes;
     }
 
     /**
@@ -438,12 +458,12 @@ public final class ZonemapFragmentPruner {
           restricted.put(e.getKey(), e.getValue());
         }
       }
-      return new PartitionInfo(columnNames, restricted, false);
+      return new PartitionInfo(columnNames, columnTypes, restricted, false);
     }
 
     /** Marks this info as soft-capped, returning a new instance (immutability preserved). */
     public PartitionInfo withSoftCapped() {
-      return new PartitionInfo(columnNames, fragmentPartitionKeys, true);
+      return new PartitionInfo(columnNames, columnTypes, fragmentPartitionKeys, true);
     }
 
     /**
@@ -458,23 +478,41 @@ public final class ZonemapFragmentPruner {
         return new GenericInternalRow(out);
       }
       for (int i = 0; i < width; i++) {
-        out[i] = toSparkValue(tuple[i]);
+        out[i] = toSparkValue(tuple[i], columnTypes.get(i));
       }
       return new GenericInternalRow(out);
     }
 
-    private static Object toSparkValue(Comparable<?> value) {
+    /**
+     * Converts a ZoneStats value to the exact Java class Spark's {@link InternalRow} expects for
+     * the target slot. ZoneStats returns {@code Long} for every integral Arrow width (int8/16/32
+     * included) and for Date (epoch-days) / Timestamp (epoch-micros); those need explicit narrowing
+     * to match {@code getByte}/{@code getShort}/{@code getInt} accessors. Boolean is already typed;
+     * Strings are wrapped in {@link UTF8String}.
+     */
+    private static Object toSparkValue(Comparable<?> value, DataType type) {
       if (value == null) {
         return null;
       }
-      if (value instanceof String) {
+      if (DataTypes.BooleanType.equals(type)) {
+        return value;
+      }
+      if (DataTypes.ByteType.equals(type)) {
+        return ((Number) value).byteValue();
+      }
+      if (DataTypes.ShortType.equals(type)) {
+        return ((Number) value).shortValue();
+      }
+      if (DataTypes.IntegerType.equals(type) || DataTypes.DateType.equals(type)) {
+        return ((Number) value).intValue();
+      }
+      if (DataTypes.LongType.equals(type) || DataTypes.TimestampType.equals(type)) {
+        return ((Number) value).longValue();
+      }
+      if (DataTypes.StringType.equals(type)) {
         return UTF8String.fromString((String) value);
       }
-      // Boolean/Byte/Short/Integer/Long pass through unchanged — Spark's InternalRow accepts
-      // them as-is. Date/Timestamp mappings belong here once ZoneStats' concrete return class
-      // is pinned; until then the type whitelist in LanceScanBuilder rejects those columns
-      // upstream so we never see them here.
-      return value;
+      throw new IllegalArgumentException("Unsupported partition column type: " + type);
     }
   }
 

@@ -428,17 +428,18 @@ public class LanceScanBuilderTest {
 
   @Test
   public void testDetectPartitioningRejectsMismatchedCoverage() {
-    // Column "a" covers fragments {0, 1}; column "b" covers only {0}. Strict-subset coverage
+    // Column "x" covers fragments {0, 1}; column "y" covers only {0}. Strict-subset coverage
     // must reject detection entirely — otherwise fragment 1 would produce a phantom null tuple
-    // element for column "b" (same class of bug the per-column intersection used to allow).
+    // element for column "y" (same class of bug the per-column intersection used to allow).
+    // Column names chosen from TEST_SCHEMA (x, y, b, c) so fullSchema.fieldIndex resolves.
     LanceScanBuilder builder = createBuilder();
     Map<String, List<ZoneStats>> stats = new HashMap<>();
     stats.put(
-        "a", Arrays.asList(new ZoneStats(0, 0, 10, 1L, 1L, 0), new ZoneStats(1, 0, 10, 2L, 2L, 0)));
-    stats.put("b", Collections.singletonList(new ZoneStats(0, 0, 10, 100L, 100L, 0)));
+        "x", Arrays.asList(new ZoneStats(0, 0, 10, 1L, 1L, 0), new ZoneStats(1, 0, 10, 2L, 2L, 0)));
+    stats.put("y", Collections.singletonList(new ZoneStats(0, 0, 10, 100L, 100L, 0)));
 
     ZonemapFragmentPruner.PartitionInfo info =
-        builder.detectPartitioning(Arrays.asList("a", "b"), stats);
+        builder.detectPartitioning(Arrays.asList("x", "y"), stats);
     assertNull(info, "Detection must reject when per-column fragment coverage differs");
   }
 
@@ -447,16 +448,18 @@ public class LanceScanBuilderTest {
     LanceScanBuilder builder = createBuilder();
     Map<String, List<ZoneStats>> stats = new HashMap<>();
     stats.put(
-        "a", Arrays.asList(new ZoneStats(0, 0, 10, 1L, 1L, 0), new ZoneStats(1, 0, 10, 2L, 2L, 0)));
+        "x", Arrays.asList(new ZoneStats(0, 0, 10, 1L, 1L, 0), new ZoneStats(1, 0, 10, 2L, 2L, 0)));
     stats.put(
-        "b",
+        "y",
         Arrays.asList(
             new ZoneStats(0, 0, 10, 100L, 100L, 0), new ZoneStats(1, 0, 10, 200L, 200L, 0)));
 
     ZonemapFragmentPruner.PartitionInfo info =
-        builder.detectPartitioning(Arrays.asList("a", "b"), stats);
+        builder.detectPartitioning(Arrays.asList("x", "y"), stats);
     assertNotNull(info);
-    assertEquals(Arrays.asList("a", "b"), info.getColumnNames());
+    assertEquals(Arrays.asList("x", "y"), info.getColumnNames());
+    // Types resolved from TEST_SCHEMA (both x and y are LongType).
+    assertEquals(Arrays.asList(DataTypes.LongType, DataTypes.LongType), info.getColumnTypes());
     assertEquals(2, info.size());
     // Tuples are assembled in declaration order, fragment by fragment.
     assertArrayEquals(new Object[] {1L, 100L}, info.getFragmentPartitionKeys().get(0));

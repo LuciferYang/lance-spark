@@ -563,7 +563,8 @@ public class ZonemapFragmentPrunerTest {
     values.put(0, "east");
     values.put(1, "west");
     ZonemapFragmentPruner.PartitionInfo info =
-        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "region", org.apache.spark.sql.types.DataTypes.StringType, values);
 
     InternalRow row0 = info.partitionKeyForFragment(0);
     assertNotNull(row0);
@@ -583,7 +584,8 @@ public class ZonemapFragmentPrunerTest {
     values.put(0, 2023L);
     values.put(1, 2024L);
     ZonemapFragmentPruner.PartitionInfo info =
-        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("year", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "year", org.apache.spark.sql.types.DataTypes.LongType, values);
 
     InternalRow row0 = info.partitionKeyForFragment(0);
     assertEquals(2023L, row0.getLong(0));
@@ -597,7 +599,8 @@ public class ZonemapFragmentPrunerTest {
     Map<Integer, Comparable<?>> values = new HashMap<>();
     values.put(0, "east");
     ZonemapFragmentPruner.PartitionInfo info =
-        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "region", org.apache.spark.sql.types.DataTypes.StringType, values);
 
     InternalRow row = info.partitionKeyForFragment(99);
     assertNotNull(row);
@@ -610,7 +613,8 @@ public class ZonemapFragmentPrunerTest {
     values.put(0, "east");
     values.put(1, "west");
     ZonemapFragmentPruner.PartitionInfo info =
-        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "region", org.apache.spark.sql.types.DataTypes.StringType, values);
 
     java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
     java.io.ObjectOutputStream oos = new java.io.ObjectOutputStream(baos);
@@ -632,7 +636,8 @@ public class ZonemapFragmentPrunerTest {
     Map<Integer, Comparable<?>> values = new HashMap<>();
     values.put(0, "east");
     ZonemapFragmentPruner.PartitionInfo info =
-        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", values);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "region", org.apache.spark.sql.types.DataTypes.StringType, values);
 
     assertThrows(
         UnsupportedOperationException.class,

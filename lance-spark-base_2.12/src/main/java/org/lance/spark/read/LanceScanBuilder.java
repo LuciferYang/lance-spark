@@ -464,12 +464,9 @@ public class LanceScanBuilder
       return false;
     }
     org.apache.spark.sql.types.DataType type = fullSchema.fields()[idx].dataType();
-    // Whitelist types whose Spark InternalRow encoding matches the raw Java value returned by
-    // ZoneStats (primitive pass-through, or UTF8String for Strings). Date/Timestamp are
-    // deliberately excluded: Spark expects epoch-days int / epoch-micros long but ZoneStats
-    // may return java.sql.Date / java.time.Instant, which would corrupt SPJ keys without an
-    // explicit converter. Re-enable once the JNI-produced runtime class is pinned and a
-    // toSparkValue mapping is added for it.
+    // Whitelist types that PartitionInfo.toSparkValue can encode into Spark's InternalRow.
+    // ZoneStats always returns Long for integral Arrow widths (int8/16/32 too) and for
+    // Date (epoch-days) / Timestamp (epoch-micros); toSparkValue narrows/wraps appropriately.
     // Use .equals() rather than == so a DataType materialized from a deserialized schema
     // (e.g. JSON/Avro round-trip) still matches the singleton constants.
     if (DataTypes.BooleanType.equals(type)
@@ -477,12 +474,14 @@ public class LanceScanBuilder
         || DataTypes.ShortType.equals(type)
         || DataTypes.IntegerType.equals(type)
         || DataTypes.LongType.equals(type)
-        || DataTypes.StringType.equals(type)) {
+        || DataTypes.StringType.equals(type)
+        || DataTypes.DateType.equals(type)
+        || DataTypes.TimestampType.equals(type)) {
       return true;
     }
     LOG.warn(
         "partition column '{}' has unsupported type {}: whitelist is"
-            + " Boolean/Byte/Short/Int/Long/String",
+            + " Boolean/Byte/Short/Int/Long/String/Date/Timestamp",
         columnName,
         type.typeName());
     return false;
@@ -541,7 +540,9 @@ public class LanceScanBuilder
       return null;
     }
 
-    // Assemble tuples in declaration order.
+    // Assemble tuples in declaration order, and resolve per-column Spark types from the full
+    // read schema so PartitionInfo can encode each value into the right InternalRow slot
+    // (narrowing Long -> byte/short/int for Byte/Short/Int/Date columns, pass-through otherwise).
     int width = partitionColumns.size();
     Map<Integer, Comparable<?>[]> tuples = new HashMap<>();
     for (Integer fragId : intersection) {
@@ -551,8 +552,12 @@ public class LanceScanBuilder
       }
       tuples.put(fragId, tuple);
     }
+    List<org.apache.spark.sql.types.DataType> columnTypes = new java.util.ArrayList<>(width);
+    for (String name : partitionColumns) {
+      columnTypes.add(fullSchema.fields()[fullSchema.fieldIndex(name)].dataType());
+    }
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo(partitionColumns, tuples);
+        new ZonemapFragmentPruner.PartitionInfo(partitionColumns, columnTypes, tuples);
 
     // Apply soft cap based on session conf (if available) or the default. When the cap fires,
     // the scan will report UnknownPartitioning — log that branch separately so operators don't

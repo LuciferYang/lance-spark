@@ -199,7 +199,8 @@ public class LanceScanTest {
     fragValues.put(0, "east");
     fragValues.put(1, "west");
     ZonemapFragmentPruner.PartitionInfo partInfo =
-        ZonemapFragmentPruner.PartitionInfo.forSingleColumn("region", fragValues);
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "region", org.apache.spark.sql.types.DataTypes.StringType, fragValues);
 
     LanceScan scan =
         new LanceScan(
@@ -269,7 +270,12 @@ public class LanceScanTest {
     tuples.put(0, new Comparable<?>[] {"us", 2024L});
     tuples.put(1, new Comparable<?>[] {"eu", 2025L});
     ZonemapFragmentPruner.PartitionInfo info =
-        new ZonemapFragmentPruner.PartitionInfo(java.util.Arrays.asList("region", "year"), tuples);
+        new ZonemapFragmentPruner.PartitionInfo(
+            java.util.Arrays.asList("region", "year"),
+            java.util.Arrays.asList(
+                org.apache.spark.sql.types.DataTypes.StringType,
+                org.apache.spark.sql.types.DataTypes.LongType),
+            tuples);
 
     LanceScan scan = buildScanWithPartitionInfo(info);
     scan.planInputPartitions();
@@ -296,7 +302,10 @@ public class LanceScanTest {
     tuples.put(0, new Comparable<?>[] {"us"});
     ZonemapFragmentPruner.PartitionInfo info =
         new ZonemapFragmentPruner.PartitionInfo(
-                java.util.Collections.singletonList("region"), tuples)
+                java.util.Collections.singletonList("region"),
+                java.util.Collections.singletonList(
+                    org.apache.spark.sql.types.DataTypes.StringType),
+                tuples)
             .withSoftCapped();
 
     LanceScan scan = buildScanWithPartitionInfo(info);

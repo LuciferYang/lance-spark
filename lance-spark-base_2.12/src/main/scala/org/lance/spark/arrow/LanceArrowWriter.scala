@@ -323,11 +323,18 @@ private[arrow] class LargeBinaryWriter(val valueVector: LargeVarBinaryVector)
 
 private[arrow] class FixedSizeBinaryWriter(val valueVector: FixedSizeBinaryVector)
   extends LanceArrowFieldWriter {
+  private val byteWidth: Int = valueVector.getByteWidth
   override def setNull(): Unit = {
     valueVector.setNull(count)
   }
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     val bytes = input.getBinary(ordinal)
+    // FixedSizeBinaryVector.setSafe silently truncates/corrupts when the input length does not
+    // match byteWidth; validate up-front so the user gets a clear, column-aware error instead.
+    if (bytes.length != byteWidth) {
+      throw new IllegalArgumentException(
+        s"FixedSizeBinary column expects $byteWidth bytes per row, got ${bytes.length}")
+    }
     valueVector.setSafe(count, bytes)
   }
 }

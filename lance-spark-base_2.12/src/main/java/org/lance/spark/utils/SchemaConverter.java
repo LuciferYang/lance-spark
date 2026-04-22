@@ -316,7 +316,8 @@ public class SchemaConverter {
 
       if (properties.containsKey(byteWidthProperty)) {
         if (field.dataType() instanceof BinaryType) {
-          long byteWidth = Long.parseLong(properties.get(byteWidthProperty));
+          String raw = properties.get(byteWidthProperty);
+          int byteWidth = parseFixedSizeBinaryByteWidth(field.name(), raw);
           Metadata newMetadata =
               new MetadataBuilder()
                   .withMetadata(field.metadata())
@@ -337,6 +338,37 @@ public class SchemaConverter {
     }
 
     return new StructType(newFields);
+  }
+
+  /**
+   * Parses and validates a FixedSizeBinary byte-width property value. Arrow's {@code
+   * FixedSizeBinary} requires a positive int; {@code 0}, negatives, and values above {@link
+   * Integer#MAX_VALUE} would produce cryptic failures deep inside Arrow, so reject at property-
+   * processing time with the column name in the message.
+   */
+  private static int parseFixedSizeBinaryByteWidth(String columnName, String raw) {
+    long byteWidth;
+    try {
+      byteWidth = Long.parseLong(raw);
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException(
+          "FixedSizeBinary column '"
+              + columnName
+              + "' byte-width property must be an integer, found: '"
+              + raw
+              + "'",
+          e);
+    }
+    if (byteWidth <= 0 || byteWidth > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException(
+          "FixedSizeBinary column '"
+              + columnName
+              + "' byte-width must be in the range [1, "
+              + Integer.MAX_VALUE
+              + "], found: "
+              + byteWidth);
+    }
+    return (int) byteWidth;
   }
 
   /**

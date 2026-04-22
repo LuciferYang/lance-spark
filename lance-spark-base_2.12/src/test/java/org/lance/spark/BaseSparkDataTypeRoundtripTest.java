@@ -45,6 +45,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -416,8 +417,9 @@ public abstract class BaseSparkDataTypeRoundtripTest {
    * ArrayType(DoubleType))}.
    *
    * <p>Arrow has no UDT concept, so the read-back schema loses the UDT wrapper and returns a plain
-   * {@code StructType}. Data values are intact and can be reconstructed via {@link
-   * VectorUDT#deserialize(Object)}.
+   * {@code StructType}. Data values are intact; {@link VectorUDT#deserialize(Object)} expects an
+   * {@code InternalRow}, so in a test context (where Spark hands back public {@link Row}s) the
+   * helper reconstructs vectors manually.
    *
    * <p>Note: a null VectorUDT row is intentionally omitted. VectorUDT's sqlType marks the inner
    * {@code type} field as non-nullable; when the parent struct is null, the StructWriter writes
@@ -436,12 +438,21 @@ public abstract class BaseSparkDataTypeRoundtripTest {
     List<Row> data = Arrays.asList(RowFactory.create(0, dense), RowFactory.create(1, sparse));
 
     Dataset<Row> result = writeAndRead(schema, data, "vector_udt");
-    List<Row> out = result.orderBy("id").collectAsList();
 
+    // Read-back schema must lose the UDT wrapper — Arrow has no UDT concept, so the column comes
+    // back as VectorUDT's sqlType (a plain struct). Lock that contract here so a future change
+    // that accidentally preserves UDT in metadata is caught loudly.
+    assertFalse(
+        result.schema().apply("vec").dataType() instanceof VectorUDT,
+        "read-back column must not carry VectorUDT; expected the underlying struct sqlType");
+    assertInstanceOf(
+        StructType.class,
+        result.schema().apply("vec").dataType(),
+        "read-back column must be VectorUDT.sqlType (StructType)");
+
+    List<Row> out = result.orderBy("id").collectAsList();
     assertEquals(2, out.size());
 
-    // Read-back schema loses the UDT wrapper — the column is a plain struct with fields:
-    // (type: byte, size: int, indices: array<int>, values: array<double>).
     // Reconstruct vectors manually since VectorUDT.deserialize() expects InternalRow.
     assertEquals(dense, reconstructVector(out.get(0).getStruct(1)));
     assertEquals(sparse, reconstructVector(out.get(1).getStruct(1)));
@@ -454,28 +465,36 @@ public abstract class BaseSparkDataTypeRoundtripTest {
    */
   private static Vector reconstructVector(Row struct) {
     byte type = struct.getByte(0);
-    if (type == 1) {
-      // Dense vector — values at index 3
-      List<Double> vals = struct.getList(3);
-      double[] arr = new double[vals.size()];
-      for (int i = 0; i < arr.length; i++) {
-        arr[i] = vals.get(i);
-      }
-      return new DenseVector(arr);
-    } else {
-      // Sparse vector — size at 1, indices at 2, values at 3
-      int size = struct.getInt(1);
-      List<Integer> idxList = struct.getList(2);
-      List<Double> valList = struct.getList(3);
-      int[] indices = new int[idxList.size()];
-      double[] values = new double[valList.size()];
-      for (int i = 0; i < indices.length; i++) {
-        indices[i] = idxList.get(i);
-      }
-      for (int i = 0; i < values.length; i++) {
-        values[i] = valList.get(i);
-      }
-      return new SparseVector(size, indices, values);
+    switch (type) {
+      case 1:
+        {
+          // Dense vector — values at index 3
+          List<Double> vals = struct.getList(3);
+          double[] arr = new double[vals.size()];
+          for (int i = 0; i < arr.length; i++) {
+            arr[i] = vals.get(i);
+          }
+          return new DenseVector(arr);
+        }
+      case 0:
+        {
+          // Sparse vector — size at 1, indices at 2, values at 3
+          int size = struct.getInt(1);
+          List<Integer> idxList = struct.getList(2);
+          List<Double> valList = struct.getList(3);
+          int[] indices = new int[idxList.size()];
+          double[] values = new double[valList.size()];
+          for (int i = 0; i < indices.length; i++) {
+            indices[i] = idxList.get(i);
+          }
+          for (int i = 0; i < values.length; i++) {
+            values[i] = valList.get(i);
+          }
+          return new SparseVector(size, indices, values);
+        }
+      default:
+        throw new IllegalArgumentException(
+            "unknown VectorUDT type byte: " + type + " (expected 0=sparse or 1=dense)");
     }
   }
 }

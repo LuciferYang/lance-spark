@@ -465,4 +465,16 @@ public class LanceScanBuilderTest {
     assertArrayEquals(new Object[] {1L, 100L}, info.getFragmentPartitionKeys().get(0));
     assertArrayEquals(new Object[] {2L, 200L}, info.getFragmentPartitionKeys().get(1));
   }
+
+  // --- parsePartitionColumns: direct assertions on the token list ---
+
+  @Test
+  public void testParsePartitionColumnsDedupesTrimsAndPreservesOrder() {
+    // "y, x , x, b" exercises all three behaviors together: whitespace trimming happens before
+    // dedup (so " x " collapses with "x"), duplicates after the first are dropped with a WARN,
+    // and the surviving tokens keep source-string order (not alphabetic).
+    LanceScanBuilder builder = createBuilder();
+    List<String> result = builder.parsePartitionColumns("y, x , x, b");
+    assertEquals(Arrays.asList("y", "x", "b"), result);
+  }
 }

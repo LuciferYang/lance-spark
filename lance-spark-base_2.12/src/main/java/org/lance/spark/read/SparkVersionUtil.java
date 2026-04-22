@@ -32,7 +32,14 @@ final class SparkVersionUtil {
    * back to UnknownPartitioning" behavior.
    */
   static boolean supportsMultiKeySpj() {
-    String version = package$.MODULE$.SPARK_VERSION();
+    return supportsMultiKeySpj(package$.MODULE$.SPARK_VERSION());
+  }
+
+  /**
+   * Package-private pure-function overload for unit tests. Inputs the version string directly so
+   * the parse/allowlist logic can be exercised without a running SparkContext.
+   */
+  static boolean supportsMultiKeySpj(String version) {
     if (version == null) {
       return false;
     }

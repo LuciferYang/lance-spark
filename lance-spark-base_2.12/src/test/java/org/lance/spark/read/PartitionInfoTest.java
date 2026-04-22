@@ -308,4 +308,14 @@ public class PartitionInfoTest {
         UTF8String.fromString("east"),
         info.partitionKeyForFragment(0).get(0, DataTypes.StringType));
   }
+
+  @Test
+  public void unsupportedPartitionTypeThrowsAtEncodeTime() {
+    // If detection is bypassed and a non-whitelisted type reaches toSparkValue, we must fail loud
+    // rather than hand Spark a slot that silently contains the wrong Java class.
+    ZonemapFragmentPruner.PartitionInfo info =
+        ZonemapFragmentPruner.PartitionInfo.forSingleColumn(
+            "d", DataTypes.DoubleType, Collections.singletonMap(0, 1.5));
+    assertThrows(IllegalArgumentException.class, () -> info.partitionKeyForFragment(0));
+  }
 }

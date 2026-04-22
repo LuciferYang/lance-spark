@@ -415,7 +415,8 @@ public class LanceScanBuilder
    * rejects nested paths, and validates each column's Spark type against the whitelist. Returns an
    * empty list if the property is absent, empty, or any column fails validation (reject-all).
    */
-  private List<String> parsePartitionColumns(String raw) {
+  // Package-private so LanceScanBuilderTest can assert dedup / ordering directly.
+  List<String> parsePartitionColumns(String raw) {
     // Treat null, empty, whitespace-only, and pure-delimiter values (",", ", ,", ...) all as
     // "property not set" — these are the no-op cases; returning quietly avoids a spurious WARN.
     if (raw == null || raw.replace(",", "").trim().isEmpty()) {

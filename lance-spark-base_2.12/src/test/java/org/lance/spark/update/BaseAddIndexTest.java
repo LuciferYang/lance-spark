@@ -14,6 +14,8 @@
 package org.lance.spark.update;
 
 import org.lance.index.Index;
+import org.lance.index.IndexCriteria;
+import org.lance.index.IndexDescription;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -447,6 +449,86 @@ public abstract class BaseAddIndexTest {
     // Verify query still works
     Dataset<Row> query = spark.sql(String.format("select * from %s where id=5", fullTable));
     Assertions.assertEquals(1L, query.count());
+  }
+
+  @Test
+  public void testBTreeIndexHasIndexDetails() {
+    prepareDataset();
+    spark.sql(
+        String.format("alter table %s create index idx_details_btree using btree (id)", fullTable));
+    verifyIndexDetails("idx_details_btree", "BTREE");
+  }
+
+  @Test
+  public void testRangeBTreeIndexHasIndexDetails() {
+    prepareDataset();
+    spark.sql(
+        String.format(
+            "alter table %s create index idx_details_range using btree (id) with (build_mode='range')",
+            fullTable));
+    verifyIndexDetails("idx_details_range", "BTREE");
+  }
+
+  @Test
+  public void testFtsIndexHasIndexDetails() {
+    prepareDataset();
+    spark.sql(
+        String.format(
+            "alter table %s create index idx_details_fts using fts (text) with ("
+                + "base_tokenizer='simple', "
+                + "language='English', "
+                + "max_token_length=40, "
+                + "lower_case=true, "
+                + "stem=false, "
+                + "remove_stop_words=false, "
+                + "ascii_folding=false, "
+                + "with_position=true"
+                + ")",
+            fullTable));
+    verifyIndexDetails("idx_details_fts", "INVERTED");
+  }
+
+  /** Checks index_details is populated and both describeIndices overloads work. */
+  private void verifyIndexDetails(String indexName, String expectedIndexType) {
+    org.lance.Dataset lanceDataset = org.lance.Dataset.open().uri(tableDir).build();
+    try {
+      List<Index> indexList = lanceDataset.getIndexes();
+      Index index =
+          indexList.stream()
+              .filter(i -> indexName.equals(i.name()))
+              .findFirst()
+              .orElseThrow(
+                  () -> new AssertionError("Index '" + indexName + "' not found in dataset"));
+      Assertions.assertTrue(
+          index.indexDetails().isPresent(),
+          "index_details should be populated for index '" + indexName + "'");
+
+      // criteria-based overload
+      IndexCriteria criteria = new IndexCriteria.Builder().build();
+      List<IndexDescription> descriptions = lanceDataset.describeIndices(criteria);
+      Assertions.assertFalse(
+          descriptions.isEmpty(), "describeIndices(criteria) should return at least one index");
+      IndexDescription desc =
+          descriptions.stream()
+              .filter(d -> indexName.equals(d.getName()))
+              .findFirst()
+              .orElseThrow(
+                  () -> new AssertionError("Index description for '" + indexName + "' not found"));
+      Assertions.assertEquals(
+          expectedIndexType.toUpperCase(),
+          desc.getIndexType().toUpperCase(),
+          "Index type mismatch for '" + indexName + "'");
+
+      // no-arg overload
+      List<IndexDescription> noArgDescriptions = lanceDataset.describeIndices();
+      Assertions.assertFalse(
+          noArgDescriptions.isEmpty(), "describeIndices() no-arg should succeed");
+      Assertions.assertTrue(
+          noArgDescriptions.stream().anyMatch(d -> indexName.equals(d.getName())),
+          "describeIndices() no-arg should contain index '" + indexName + "'");
+    } finally {
+      lanceDataset.close();
+    }
   }
 
   private void checkIndex(String indexName) {

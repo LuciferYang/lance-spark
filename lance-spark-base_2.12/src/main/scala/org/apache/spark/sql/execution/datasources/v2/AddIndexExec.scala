@@ -84,8 +84,7 @@ case class AddIndexExec(
     val uuid = UUID.randomUUID()
     val indexType = IndexUtils.buildIndexType(method)
 
-    // Create distributed index job and run it
-    createIndexJob(lanceDataset, readOptions, uuid.toString, fragmentIds).run()
+    val indexDetails = createIndexJob(lanceDataset, readOptions, uuid.toString, fragmentIds).run()
 
     val dataset = Utils.openDatasetBuilder(readOptions).build()
     try {
@@ -99,7 +98,7 @@ case class AddIndexExec(
 
       val datasetVersion = dataset.version()
 
-      val index = Index
+      val builder = Index
         .builder()
         .uuid(uuid)
         .name(indexName)
@@ -107,7 +106,8 @@ case class AddIndexExec(
         .datasetVersion(datasetVersion)
         .indexVersion(0)
         .fragments(fragmentIds.asJava)
-        .build()
+      indexDetails.foreach(builder.indexDetails)
+      val index = builder.build()
 
       // Find existing indices with the same name to mark as removed (for replace)
       val removedIndices = dataset.getIndexes.asScala
@@ -207,7 +207,9 @@ case class AddIndexExec(
  * Interface for index job to implement different indexing strategies.
  */
 trait IndexJob extends Serializable {
-  def run(): Unit
+
+  /** @return index_details bytes from a worker, or None if unavailable. */
+  def run(): Option[Array[Byte]]
 }
 
 /**
@@ -234,7 +236,7 @@ class FragmentBasedIndexJob(
     tableId: Option[List[String]],
     initialStorageOpts: Option[Map[String, String]]) extends IndexJob {
 
-  override def run(): Unit = {
+  override def run(): Option[Array[Byte]] = {
     val encodedReadOptions = encode(readOptions)
     val columns = addIndexExec.columns.toList
     val argsJson = IndexUtils.toJson(addIndexExec.args)
@@ -255,10 +257,12 @@ class FragmentBasedIndexJob(
         initialStorageOpts)
     }.toSeq
 
-    addIndexExec.session.sparkContext
+    val results = addIndexExec.session.sparkContext
       .parallelize(tasks, tasks.size)
       .map(t => t.execute())
       .collect()
+
+    IndexUtils.collectFirstIndexDetails(results)
   }
 }
 
@@ -311,12 +315,11 @@ case class FragmentIndexTask(
       .build()
 
     try {
-      dataset.createIndex(indexOptions)
+      val createdIndex = dataset.createIndex(indexOptions)
+      encode(IndexUtils.extractIndexDetails(createdIndex))
     } finally {
       dataset.close()
     }
-
-    encode("OK")
   }
 }
 
@@ -344,7 +347,7 @@ class RangeBasedBTreeIndexJob(
 
   private val VALUE_COLUMN_NAME = "value"
 
-  override def run(): Unit = {
+  override def run(): Option[Array[Byte]] = {
     if (addIndexExec.columns.size != 1) {
       throw new UnsupportedOperationException(
         "Range-based BTree index currently supports a single column only")
@@ -390,9 +393,11 @@ class RangeBasedBTreeIndexJob(
       initialStorageOpts,
       rangeDf.schema)
 
-    rangeDf.queryExecution.toRdd.mapPartitionsWithIndex { case (rangeId, rowsIter) =>
+    val results = rangeDf.queryExecution.toRdd.mapPartitionsWithIndex { case (rangeId, rowsIter) =>
       indexBuilder.buildForRange(rangeId, rowsIter)
     }.collect()
+
+    IndexUtils.collectFirstIndexDetails(results)
   }
 
 }
@@ -424,7 +429,7 @@ case class RangeBTreeIndexBuilder(
     initialStorageOptions: Option[Map[String, String]],
     schema: StructType) extends Serializable {
 
-  def buildForRange(rangeId: Int, rowsIter: Iterator[InternalRow]): Iterator[Unit] = {
+  def buildForRange(rangeId: Int, rowsIter: Iterator[InternalRow]): Iterator[String] = {
     // Initialize writer to write data to arrow stream
     val allocator = LanceRuntime.allocator()
     val data =
@@ -452,7 +457,7 @@ case class RangeBTreeIndexBuilder(
     // No rows are written
     if (data.getRowCount == 0) {
       data.close()
-      return Iterator.empty
+      return Iterator(encode(None: Option[Array[Byte]]))
     }
 
     var stream: ArrowArrayStream = null
@@ -487,15 +492,14 @@ case class RangeBTreeIndexBuilder(
         .withPreprocessedData(stream)
         .build()
 
-      dataset.createIndex(indexOptions)
+      val createdIndex = dataset.createIndex(indexOptions)
+      Iterator(encode(IndexUtils.extractIndexDetails(createdIndex)))
     } finally {
       CloseableUtil.closeQuietly(stream)
       CloseableUtil.closeQuietly(reader)
       CloseableUtil.closeQuietly(data)
       CloseableUtil.closeQuietly(dataset)
     }
-
-    Iterator.empty
   }
 }
 
@@ -517,6 +521,19 @@ object IndexUtils {
       case "fts" => IndexType.INVERTED
       case other => throw new UnsupportedOperationException(s"Unsupported index method: $other")
     }
+  }
+
+  /** Extracts index_details bytes from a newly created Index. */
+  def extractIndexDetails(index: Index): Option[Array[Byte]] = {
+    val opt = index.indexDetails()
+    if (opt.isPresent) Some(opt.get()) else None
+  }
+
+  /** Returns the first non-empty index_details from serialized worker results. */
+  def collectFirstIndexDetails(encodedResults: Array[String]): Option[Array[Byte]] = {
+    encodedResults.iterator
+      .map(encoded => decode[Option[Array[Byte]]](encoded))
+      .collectFirst { case Some(details) => details }
   }
 
   def toJson(args: Seq[LanceNamedArgument]): String = {

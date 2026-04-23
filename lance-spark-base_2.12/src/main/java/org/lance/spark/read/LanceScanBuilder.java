@@ -16,6 +16,7 @@ package org.lance.spark.read;
 import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.ManifestSummary;
+import org.lance.index.IndexCriteria;
 import org.lance.index.IndexDescription;
 import org.lance.index.scalar.ZoneStats;
 import org.lance.ipc.ColumnOrdering;
@@ -381,7 +382,10 @@ public class LanceScanBuilder
         fieldIdToName.put(field.getId(), field.getName());
       }
 
-      for (IndexDescription idx : dataset.describeIndices()) {
+      // Use the criteria-based overload so that indexes missing index_details
+      // (created by older versions) are silently skipped instead of causing errors.
+      IndexCriteria criteria = new IndexCriteria.Builder().build();
+      for (IndexDescription idx : dataset.describeIndices(criteria)) {
         if ("ZONEMAP".equalsIgnoreCase(idx.getIndexType())) {
           for (int fieldId : idx.getFieldIds()) {
             String name = fieldIdToName.get(fieldId);

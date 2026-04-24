@@ -42,6 +42,7 @@ public class DfpClusterRebuilder {
     String src = null;
     String dst = null;
     String sortBy = null;
+    int numPartitions = 0; // 0 = keep input partitioning (sortWithinPartitions only)
 
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -53,6 +54,9 @@ public class DfpClusterRebuilder {
           break;
         case "--sort-by":
           sortBy = args[++i];
+          break;
+        case "--num-partitions":
+          numPartitions = Integer.parseInt(args[++i]);
           break;
         default:
           System.err.println("Unknown argument: " + args[i]);
@@ -81,15 +85,21 @@ public class DfpClusterRebuilder {
       long rowCount = df.count();
       System.out.println("Rows:     " + rowCount);
 
-      // sortWithinPartitions keeps fragment locality roughly intact; a full orderBy would
-      // introduce a shuffle + reduce partitioning, which we don't want for the fixture.
-      // For DFP's purposes what matters is intra-fragment clustering, which sortWithinPartitions
-      // achieves given the default Spark partitioning = one fragment per partition on read.
-      df.sortWithinPartitions(sortBy)
-          .write()
-          .mode(SaveMode.ErrorIfExists)
-          .format("lance")
-          .save(dst);
+      // When --num-partitions is given, range-partition globally on the sort column so each
+      // output fragment covers a contiguous, non-overlapping slice of the key domain. This
+      // maximises zonemap tightness per fragment — the precondition for DFP runtime pruning
+      // to actually eliminate fragments. Without it, sortWithinPartitions only tightens
+      // intra-fragment order but leaves fragment-level zone ranges overlapping if input
+      // partitions already span the whole key domain.
+      org.apache.spark.sql.Dataset<Row> prepared;
+      if (numPartitions > 0) {
+        prepared =
+            df.repartitionByRange(numPartitions, df.col(sortBy)).sortWithinPartitions(sortBy);
+        System.out.printf("Range-partitioning into %d fragments%n", numPartitions);
+      } else {
+        prepared = df.sortWithinPartitions(sortBy);
+      }
+      prepared.write().mode(SaveMode.ErrorIfExists).format("lance").save(dst);
 
       long elapsed = System.currentTimeMillis() - start;
       System.out.printf("Wrote %s in %d ms%n", dst, elapsed);

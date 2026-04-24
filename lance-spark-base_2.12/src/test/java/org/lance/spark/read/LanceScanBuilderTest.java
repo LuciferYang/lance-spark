@@ -88,8 +88,13 @@ public class LanceScanBuilderTest {
         new Filter[] {
           new GreaterThan("x", 1L), new LessThan("y", 10L), new IsNotNull("b"),
         };
+    // Contract (matches Iceberg): return ALL input filters so Spark keeps the Filter node above
+    // the scan — required by PartitionPruning.hasSelectivePredicate and
+    // InjectRuntimeFilter.extractBeneficialFilterCreatePlan for DFP injection to fire. The
+    // pushed subset is reported separately via pushedFilters() for EXPLAIN visibility and is
+    // still pre-applied at scan time via the Lance where condition.
     Filter[] postScanFilters = builder.pushFilters(filters);
-    assertEquals(0, postScanFilters.length);
+    assertEquals(3, postScanFilters.length);
     assertEquals(3, builder.pushedFilters().length);
   }
 
@@ -102,8 +107,9 @@ public class LanceScanBuilderTest {
           new GreaterThan("x", 1L), new StringContains("b", "test"),
         };
     Filter[] postScanFilters = builder.pushFilters(filters);
-    assertEquals(1, postScanFilters.length);
-    assertInstanceOf(StringContains.class, postScanFilters[0]);
+    // All input filters are returned as post-scan (see testPushFiltersAllSupported comment).
+    assertEquals(2, postScanFilters.length);
+    // Only the supported one is reported as pushed.
     assertEquals(1, builder.pushedFilters().length);
     assertInstanceOf(GreaterThan.class, builder.pushedFilters()[0]);
   }
@@ -229,7 +235,9 @@ public class LanceScanBuilderTest {
             Collections.emptyMap());
     Filter[] filters = new Filter[] {new GreaterThan("id", 1L)};
     Filter[] result = builder.pushFilters(filters);
-    assertEquals(0, result.length);
+    // See testPushFiltersAllSupported: all input filters are returned as post-scan so
+    // Spark's Filter node survives for the DFP/runtime-filter optimizer rules.
+    assertEquals(1, result.length);
     assertEquals(1, builder.pushedFilters().length);
   }
 

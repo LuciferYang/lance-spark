@@ -619,7 +619,21 @@ public class LanceScan
     if (!readOptions.isRuntimeFilteringEnabled() || zonemapStats.isEmpty()) {
       return new NamedReference[0];
     }
-    return zonemapStats.keySet().stream().map(FieldReference::apply).toArray(NamedReference[]::new);
+    // Intersect zonemap-indexed columns with the current scan's projected schema. Advertising a
+    // column that was pruned away by SupportsPushDownRequiredColumns makes Spark's attribute
+    // resolver throw "Unable to resolve X given [projected cols]" during runtime-filter planning,
+    // because Spark builds an AttributeReference from the NamedReference and expects the scan to
+    // actually output that column. This is particularly easy to hit on star-schema queries that
+    // join on ss_sold_date_sk and ss_item_sk but don't read ss_customer_sk: the fact-side scan
+    // doesn't include it in the output, so Spark can't construct a runtime filter on it.
+    Set<String> projected = new HashSet<>();
+    for (org.apache.spark.sql.types.StructField f : schema.fields()) {
+      projected.add(f.name());
+    }
+    return zonemapStats.keySet().stream()
+        .filter(projected::contains)
+        .map(FieldReference::apply)
+        .toArray(NamedReference[]::new);
   }
 
   /**

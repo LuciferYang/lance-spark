@@ -43,7 +43,8 @@ public class TpcdsIndexBuilder {
   /** Table names in priority order (highest-impact tables first). */
   private static final String[] TABLE_NAMES = {
       "date_dim", "item", "customer_demographics", "store", "promotion",
-      "customer_address", "household_demographics"
+      "customer_address", "household_demographics",
+      "store_sales", "web_sales", "catalog_sales"
   };
 
   public static void main(String[] args) throws Exception {

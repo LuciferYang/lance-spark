@@ -33,6 +33,14 @@
             <artifactId>kyuubi-spark-connector-tpcds_${scala.compat.version}</artifactId>
             <version>${kyuubi.version}</version>
         </dependency>
+        <!-- lance-core for FactZonemapIndexBuilder direct Dataset.createIndex API.
+             Provided at runtime by the lance-spark bundle jar. -->
+        <dependency>
+            <groupId>org.lance</groupId>
+            <artifactId>lance-core</artifactId>
+            <version>6.0.0-beta.3</version>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>

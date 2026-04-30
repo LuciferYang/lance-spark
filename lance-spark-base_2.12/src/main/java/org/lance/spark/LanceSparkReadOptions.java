@@ -58,6 +58,15 @@ public class LanceSparkReadOptions implements Serializable {
   public static final String CONFIG_BATCH_SIZE = "batch_size";
   public static final String CONFIG_TOP_N_PUSH_DOWN = "topN_push_down";
 
+  /** Per-scan kill-switch for Phase 1 column-stats reporting. */
+  public static final String CONFIG_CBO_COLUMN_STATS_ENABLED = "cbo.column.stats.enabled";
+
+  /**
+   * Per-scan cap on the number of projected columns for which we load and aggregate zonemap stats
+   * during {@link Statistics#columnStats()}. Bounds driver-side memory + I/O.
+   */
+  public static final String CONFIG_CBO_COLUMN_STATS_MAX_COLUMNS = "cbo.column.stats.max.columns";
+
   public static final String CONFIG_NEAREST = "nearest";
   public static final String LANCE_FILE_SUFFIX = ".lance";
 
@@ -65,6 +74,12 @@ public class LanceSparkReadOptions implements Serializable {
   // Changed from 512 to 8192 for better OLAP scan performance (33x improvement)
   private static final int DEFAULT_BATCH_SIZE = 8192;
   private static final boolean DEFAULT_TOP_N_PUSH_DOWN = true;
+  private static final boolean DEFAULT_CBO_COLUMN_STATS_ENABLED = true;
+  // Tuned at SF=10 TPC-DS: cap=8 keeps colStats coverage at 83% (filter columns always
+  // load; the cap only bounds extra projected columns) while cutting per-scan zone-stats
+  // load ~8× vs cap=64. Net runtime moves from −29% (cap=8) to +38% (cap=64) with no
+  // change in plan shape — driver-side I/O is the binding constraint, not coverage breadth.
+  private static final int DEFAULT_CBO_COLUMN_STATS_MAX_COLUMNS = 8;
 
   private final String datasetUri;
   private final String dbPath;
@@ -77,6 +92,8 @@ public class LanceSparkReadOptions implements Serializable {
   private final int batchSize;
   private transient Query nearest;
   private final boolean topNPushDown;
+  private final boolean cboColumnStatsEnabled;
+  private final int cboColumnStatsMaxColumns;
   private final Map<String, String> storageOptions;
 
   /** The namespace for credential vending. Transient as LanceNamespace is not serializable. */
@@ -101,6 +118,8 @@ public class LanceSparkReadOptions implements Serializable {
     this.batchSize = builder.batchSize;
     this.nearest = builder.nearest;
     this.topNPushDown = builder.topNPushDown;
+    this.cboColumnStatsEnabled = builder.cboColumnStatsEnabled;
+    this.cboColumnStatsMaxColumns = builder.cboColumnStatsMaxColumns;
     this.storageOptions = new HashMap<>(builder.storageOptions);
     this.namespace = builder.namespace;
     this.tableId = builder.tableId;
@@ -219,6 +238,14 @@ public class LanceSparkReadOptions implements Serializable {
     return topNPushDown;
   }
 
+  public boolean isCboColumnStatsEnabled() {
+    return cboColumnStatsEnabled;
+  }
+
+  public int getCboColumnStatsMaxColumns() {
+    return cboColumnStatsMaxColumns;
+  }
+
   public Map<String, String> getStorageOptions() {
     return storageOptions;
   }
@@ -271,6 +298,8 @@ public class LanceSparkReadOptions implements Serializable {
         .batchSize(this.batchSize)
         .nearest(this.nearest)
         .topNPushDown(this.topNPushDown)
+        .cboColumnStatsEnabled(this.cboColumnStatsEnabled)
+        .cboColumnStatsMaxColumns(this.cboColumnStatsMaxColumns)
         .storageOptions(this.storageOptions)
         .namespace(this.namespace)
         .tableId(this.tableId)
@@ -361,6 +390,8 @@ public class LanceSparkReadOptions implements Serializable {
     private Integer metadataCacheSize;
     private int batchSize = DEFAULT_BATCH_SIZE;
     private boolean topNPushDown = DEFAULT_TOP_N_PUSH_DOWN;
+    private boolean cboColumnStatsEnabled = DEFAULT_CBO_COLUMN_STATS_ENABLED;
+    private int cboColumnStatsMaxColumns = DEFAULT_CBO_COLUMN_STATS_MAX_COLUMNS;
     private Map<String, String> storageOptions = new HashMap<>();
     private LanceNamespace namespace;
     private List<String> tableId;
@@ -422,6 +453,18 @@ public class LanceSparkReadOptions implements Serializable {
       return this;
     }
 
+    public Builder cboColumnStatsEnabled(boolean cboColumnStatsEnabled) {
+      this.cboColumnStatsEnabled = cboColumnStatsEnabled;
+      return this;
+    }
+
+    public Builder cboColumnStatsMaxColumns(int cboColumnStatsMaxColumns) {
+      Preconditions.checkArgument(
+          cboColumnStatsMaxColumns >= 0, "cbo.column.stats.max.columns must be >= 0");
+      this.cboColumnStatsMaxColumns = cboColumnStatsMaxColumns;
+      return this;
+    }
+
     public Builder storageOptions(Map<String, String> storageOptions) {
       this.storageOptions = new HashMap<>(storageOptions);
       return this;
@@ -472,6 +515,15 @@ public class LanceSparkReadOptions implements Serializable {
       }
       if (options.containsKey(CONFIG_TOP_N_PUSH_DOWN)) {
         this.topNPushDown = Boolean.parseBoolean(options.get(CONFIG_TOP_N_PUSH_DOWN));
+      }
+      if (options.containsKey(CONFIG_CBO_COLUMN_STATS_ENABLED)) {
+        this.cboColumnStatsEnabled =
+            Boolean.parseBoolean(options.get(CONFIG_CBO_COLUMN_STATS_ENABLED));
+      }
+      if (options.containsKey(CONFIG_CBO_COLUMN_STATS_MAX_COLUMNS)) {
+        int parsed = Integer.parseInt(options.get(CONFIG_CBO_COLUMN_STATS_MAX_COLUMNS));
+        Preconditions.checkArgument(parsed >= 0, "cbo.column.stats.max.columns must be >= 0");
+        this.cboColumnStatsMaxColumns = parsed;
       }
       if (options.containsKey(CONFIG_NEAREST)) {
         String json = options.get(CONFIG_NEAREST);

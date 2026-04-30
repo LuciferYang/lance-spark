@@ -562,6 +562,7 @@ object IndexUtils {
     method.toLowerCase match {
       case "btree" => IndexType.BTREE
       case "fts" => IndexType.INVERTED
+      case "zonemap" => IndexType.ZONEMAP
       case other => throw new UnsupportedOperationException(s"Unsupported index method: $other")
     }
   }
@@ -570,6 +571,7 @@ object IndexUtils {
     method.toLowerCase match {
       case "btree" => "btree"
       case "fts" => "inverted"
+      case "zonemap" => "zonemap"
       case other => throw new UnsupportedOperationException(s"Unsupported index method: $other")
     }
   }

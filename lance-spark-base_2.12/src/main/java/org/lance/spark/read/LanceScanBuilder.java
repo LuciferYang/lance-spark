@@ -244,7 +244,18 @@ public class LanceScanBuilder
     }
     Filter[][] processFilters = FilterPushDown.processFilters(filters);
     pushedFilters = processFilters[0];
-    return processFilters[1];
+    // Return ALL input filters, not just the ones we cannot push. This mirrors Iceberg's
+    // SparkScanBuilder.pushPredicates (classifies all pushable filters as "partially pushed"
+    // and returns them as post-scan). Rationale: Spark's optimizer rules that inject runtime
+    // filters — PartitionPruning (DPP/DFP) via hasSelectivePredicate, and InjectRuntimeFilter
+    // via extractBeneficialFilterCreatePlan — both pattern-match on a Filter(pred, scan) node
+    // above the relation. If we tell Spark "I fully handled it" (by returning only rejected
+    // filters), Spark eliminates the Filter node, the optimizer rules see a bare scan with no
+    // selective predicate, and downstream stats estimation also misses the selectivity
+    // reduction. The pushed subset (recorded in pushedFilters() below) is still pre-applied
+    // at scan time via Lance's where condition; Spark's re-evaluation above the scan is an
+    // idempotent pass-through on already-matching rows and costs negligible CPU.
+    return filters;
   }
 
   @Override

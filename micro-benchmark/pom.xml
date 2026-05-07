@@ -1,0 +1,121 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.lance</groupId>
+    <artifactId>lance-spark-micro-benchmark</artifactId>
+    <version>0.4.0-beta.4</version>
+    <packaging>jar</packaging>
+
+    <name>Lance Spark Micro Benchmark</name>
+    <description>JMH micro-benchmarks comparing Lance vs Parquet data source read performance for OLAP scenarios</description>
+
+    <properties>
+        <spark.version>3.5.5</spark.version>
+        <scala.compat.version>2.12</scala.compat.version>
+        <lance.spark.version>0.4.0-beta.4</lance.spark.version>
+        <jmh.version>1.37</jmh.version>
+        <java.release>11</java.release>
+        <maven.compiler.release>${java.release}</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- JMH run configuration (override via -D) -->
+        <jmh.benchmarks>.*DataSourceReadBenchmark.*</jmh.benchmarks>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.arrow</groupId>
+                <artifactId>arrow-memory-core</artifactId>
+                <version>18.3.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- JMH -->
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>${jmh.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>${jmh.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Spark SQL -->
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-sql_${scala.compat.version}</artifactId>
+            <version>${spark.version}</version>
+        </dependency>
+
+        <!-- Lance Spark bundle (includes lance-core, arrow bindings, connector) -->
+        <dependency>
+            <groupId>org.lance</groupId>
+            <artifactId>lance-spark-bundle-3.5_${scala.compat.version}</artifactId>
+            <version>${lance.spark.version}</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>${project.artifactId}</finalName>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <release>${java.release}</release>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>${jmh.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!-- mvn exec:exec — run JMH benchmarks directly.
+                 Keep JVM args in sync with @Fork(jvmArgs) in DataSourceReadBenchmark.java -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <executable>java</executable>
+                    <arguments>
+                        <argument>-Xms4g</argument>
+                        <argument>-Xmx4g</argument>
+                        <argument>-XX:+UseG1GC</argument>
+                        <argument>--add-opens=java.base/java.lang=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.lang.invoke=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.lang.reflect=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.io=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.net=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.nio=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.util=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.util.concurrent=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/sun.nio.ch=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/sun.nio.cs=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/sun.security.action=ALL-UNNAMED</argument>
+                        <argument>--add-opens=java.base/sun.util.calendar=ALL-UNNAMED</argument>
+                        <argument>-Djdk.reflect.useDirectMethodHandle=false</argument>
+                        <argument>-Dio.netty.tryReflectionSetAccessible=true</argument>
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        <argument>org.openjdk.jmh.Main</argument>
+                        <argument>${jmh.benchmarks}</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+
+        </plugins>
+    </build>
+</project>

@@ -22,6 +22,7 @@ import org.apache.spark.sql.catalyst.parser.extensions.LanceSqlExtensionsLexer;
 import org.apache.spark.sql.catalyst.parser.extensions.LanceSqlExtensionsParser;
 import org.apache.spark.sql.catalyst.plans.logical.AddColumnsBackfill;
 import org.apache.spark.sql.catalyst.plans.logical.AddIndex;
+import org.apache.spark.sql.catalyst.plans.logical.LanceAnalyzeTable;
 import org.apache.spark.sql.catalyst.plans.logical.Optimize;
 import org.apache.spark.sql.catalyst.plans.logical.ShowIndexes;
 import org.apache.spark.sql.catalyst.plans.logical.UpdateColumnsBackfill;
@@ -188,5 +189,77 @@ public class LanceSqlExtensionsAstBuilderTest {
     UnresolvedIdentifier table = (UnresolvedIdentifier) plan.table();
     assertEquals(
         List.of("my-catalog", "my-table"), JavaConverters.seqAsJavaList(table.nameParts()));
+  }
+
+  // --- ANALYZE TABLE … COMPUTE STATISTICS ---
+
+  @Test
+  public void testAnalyzeTableNoTargetDefaultsToForAllColumns() {
+    LanceSqlExtensionsParser parser = createParser("ANALYZE TABLE T1 COMPUTE STATISTICS");
+    LanceAnalyzeTable plan =
+        (LanceAnalyzeTable) astBuilder.visitSingleStatement(parser.singleStatement());
+
+    UnresolvedIdentifier table = (UnresolvedIdentifier) plan.table();
+    assertEquals(List.of("T1"), JavaConverters.seqAsJavaList(table.nameParts()));
+    assertTrue(plan.forAllColumns());
+    assertTrue(JavaConverters.seqAsJavaList(plan.columns()).isEmpty());
+    assertFalse(plan.approx());
+  }
+
+  @Test
+  public void testAnalyzeTableForAllColumns() {
+    LanceSqlExtensionsParser parser =
+        createParser("ANALYZE TABLE T1 COMPUTE STATISTICS FOR ALL COLUMNS");
+    LanceAnalyzeTable plan =
+        (LanceAnalyzeTable) astBuilder.visitSingleStatement(parser.singleStatement());
+
+    assertTrue(plan.forAllColumns());
+    assertTrue(JavaConverters.seqAsJavaList(plan.columns()).isEmpty());
+    assertFalse(plan.approx());
+  }
+
+  @Test
+  public void testAnalyzeTableForColumns() {
+    LanceSqlExtensionsParser parser =
+        createParser("ANALYZE TABLE T1 COMPUTE STATISTICS FOR COLUMNS C1, C2, C3");
+    LanceAnalyzeTable plan =
+        (LanceAnalyzeTable) astBuilder.visitSingleStatement(parser.singleStatement());
+
+    assertFalse(plan.forAllColumns());
+    assertEquals(List.of("C1", "C2", "C3"), JavaConverters.seqAsJavaList(plan.columns()));
+    assertFalse(plan.approx());
+  }
+
+  @Test
+  public void testAnalyzeTableApproxFlag() {
+    LanceSqlExtensionsParser parser =
+        createParser("ANALYZE TABLE T1 COMPUTE STATISTICS FOR ALL COLUMNS APPROX");
+    LanceAnalyzeTable plan =
+        (LanceAnalyzeTable) astBuilder.visitSingleStatement(parser.singleStatement());
+
+    assertTrue(plan.forAllColumns());
+    assertTrue(plan.approx());
+  }
+
+  @Test
+  public void testAnalyzeTableApproxWithoutTargetClause() {
+    LanceSqlExtensionsParser parser = createParser("ANALYZE TABLE T1 COMPUTE STATISTICS APPROX");
+    LanceAnalyzeTable plan =
+        (LanceAnalyzeTable) astBuilder.visitSingleStatement(parser.singleStatement());
+
+    assertTrue(plan.forAllColumns());
+    assertTrue(plan.approx());
+  }
+
+  @Test
+  public void testAnalyzeTableForColumnsWithApprox() {
+    LanceSqlExtensionsParser parser =
+        createParser("ANALYZE TABLE T1 COMPUTE STATISTICS FOR COLUMNS C1 APPROX");
+    LanceAnalyzeTable plan =
+        (LanceAnalyzeTable) astBuilder.visitSingleStatement(parser.singleStatement());
+
+    assertFalse(plan.forAllColumns());
+    assertEquals(List.of("C1"), JavaConverters.seqAsJavaList(plan.columns()));
+    assertTrue(plan.approx());
   }
 }

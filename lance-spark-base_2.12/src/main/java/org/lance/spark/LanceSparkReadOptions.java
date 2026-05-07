@@ -353,6 +353,8 @@ public class LanceSparkReadOptions implements Serializable {
     return pushDownFilters == that.pushDownFilters
         && batchSize == that.batchSize
         && topNPushDown == that.topNPushDown
+        && cboColumnStatsEnabled == that.cboColumnStatsEnabled
+        && cboColumnStatsMaxColumns == that.cboColumnStatsMaxColumns
         && Objects.equals(nearest, that.nearest)
         && Objects.equals(datasetUri, that.datasetUri)
         && Objects.equals(blockSize, that.blockSize)
@@ -375,6 +377,8 @@ public class LanceSparkReadOptions implements Serializable {
         batchSize,
         nearest,
         topNPushDown,
+        cboColumnStatsEnabled,
+        cboColumnStatsMaxColumns,
         storageOptions,
         tableId);
   }

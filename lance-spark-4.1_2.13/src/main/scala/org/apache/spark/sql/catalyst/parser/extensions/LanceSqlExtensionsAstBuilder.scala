@@ -15,7 +15,7 @@ package org.apache.spark.sql.catalyst.parser.extensions
 
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedIdentifier, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.parser.ParserInterface
-import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, LanceDropIndex, LanceNamedArgument, LogicalPlan, Optimize, SetUnenforcedPrimaryKey, ShowIndexes, UpdateColumnsBackfill, Vacuum}
+import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, LanceAnalyzeTable, LanceDropIndex, LanceNamedArgument, LogicalPlan, Optimize, SetUnenforcedPrimaryKey, ShowIndexes, UpdateColumnsBackfill, Vacuum}
 import org.lance.spark.utils.ParserUtils
 
 import scala.jdk.CollectionConverters._
@@ -110,6 +110,32 @@ class LanceSqlExtensionsAstBuilder(delegate: ParserInterface)
     val table = UnresolvedIdentifier(visitMultipartIdentifier(ctx.multipartIdentifier()))
     val columns = visitColumnList(ctx.columnList())
     SetUnenforcedPrimaryKey(table, columns)
+  }
+
+  override def visitAnalyzeTable(ctx: LanceSqlExtensionsParser.AnalyzeTableContext)
+      : LanceAnalyzeTable = {
+    val table = UnresolvedIdentifier(visitMultipartIdentifier(ctx.multipartIdentifier()))
+    var forAllColumns = true // default when target clause is omitted
+    var columns: Seq[String] = Seq.empty
+    val target = ctx.analyzeTarget()
+    if (target != null) {
+      target match {
+        case forCols: LanceSqlExtensionsParser.AnalyzeForColumnsContext =>
+          forAllColumns = false
+          columns = visitColumnList(forCols.columnList())
+        case _: LanceSqlExtensionsParser.AnalyzeAllColumnsContext =>
+          forAllColumns = true
+        case other =>
+          // Defensive fallback: ANTLR-matched contexts are not a sealed hierarchy, so the
+          // compiler cannot prove exhaustiveness. If a future grammar revision adds a third
+          // analyzeTarget alternative without updating this visitor, prefer a clear parse-time
+          // error over a confusing runtime MatchError deep in the planner.
+          throw new IllegalStateException(
+            s"Unhandled analyzeTarget context: ${other.getClass.getSimpleName}")
+      }
+    }
+    val approx = ctx.approxFlag() != null
+    LanceAnalyzeTable(table, columns, forAllColumns, approx)
   }
 
   override def visitStringLiteral(ctx: LanceSqlExtensionsParser.StringLiteralContext): String = {

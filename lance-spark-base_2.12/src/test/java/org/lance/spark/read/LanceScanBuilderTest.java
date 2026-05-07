@@ -88,8 +88,11 @@ public class LanceScanBuilderTest {
         new Filter[] {
           new GreaterThan("x", 1L), new LessThan("y", 10L), new IsNotNull("b"),
         };
+    // pushFilters returns ALL input filters (Iceberg-style "partially pushed" pattern) so that
+    // Spark's optimizer keeps the Filter wrapper above the scan; the pushed subset is pre-applied
+    // by Lance's where condition, so re-evaluation above the scan is an idempotent no-op.
     Filter[] postScanFilters = builder.pushFilters(filters);
-    assertEquals(0, postScanFilters.length);
+    assertEquals(3, postScanFilters.length);
     assertEquals(3, builder.pushedFilters().length);
   }
 
@@ -102,8 +105,8 @@ public class LanceScanBuilderTest {
           new GreaterThan("x", 1L), new StringContains("b", "test"),
         };
     Filter[] postScanFilters = builder.pushFilters(filters);
-    assertEquals(1, postScanFilters.length);
-    assertInstanceOf(StringContains.class, postScanFilters[0]);
+    // Returns all input filters; pushedFilters() exposes the subset Lance handles.
+    assertEquals(2, postScanFilters.length);
     assertEquals(1, builder.pushedFilters().length);
     assertInstanceOf(GreaterThan.class, builder.pushedFilters()[0]);
   }
@@ -157,7 +160,8 @@ public class LanceScanBuilderTest {
             Collections.emptyMap());
     Filter[] filters = new Filter[] {new GreaterThan("id", 1L)};
     Filter[] result = builder.pushFilters(filters);
-    assertEquals(0, result.length);
+    // pushFilters returns all input filters; pushedFilters() exposes Lance-handled subset.
+    assertEquals(1, result.length);
     assertEquals(1, builder.pushedFilters().length);
   }
 

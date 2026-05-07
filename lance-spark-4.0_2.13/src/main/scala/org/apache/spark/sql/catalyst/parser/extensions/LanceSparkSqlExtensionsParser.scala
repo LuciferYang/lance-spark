@@ -36,7 +36,8 @@ class LanceSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInt
   /**
    * Parse a string to a raw DataType without CHAR/VARCHAR replacement.
    */
-  def parseRawDataType(sqlText: String): DataType = throw new UnsupportedOperationException()
+  def parseRawDataType(sqlText: String): DataType = throw new UnsupportedOperationException(
+    "parseRawDataType is not supported by the Lance SQL extensions parser; use parseDataType instead.")
 
   /**
    * Parse a string to an Expression.
@@ -76,17 +77,33 @@ class LanceSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInt
 
   /**
    * Parse a string to a LogicalPlan.
+   *
+   * <p>For commands that exist in Spark's built-in parser AND in our extension grammar (currently
+   * just {@code ANALYZE TABLE}), we MUST try the extension grammar first — otherwise Spark's
+   * delegate parses {@code ANALYZE TABLE foo COMPUTE STATISTICS} into its own
+   * {@code AnalyzeTableCommand}, which the analyzer then rejects for V2 tables with
+   * NOT_SUPPORTED_COMMAND_FOR_V2_TABLE before our planner strategy ever runs.
    */
   override def parsePlan(sqlText: String): LogicalPlan = {
-    if (sqlText.trim.toUpperCase.startsWith("CREATE INDEX")) {
+    // Strip leading SQL trivia before the CREATE INDEX prefix check so hinted SQL like
+    // `/* hint */ CREATE INDEX ...` is also caught (sqlText.trim only handles whitespace).
+    val noTrivia = LanceSparkSqlExtensionsParser.stripLeadingTrivia(sqlText)
+    if (noTrivia != null && noTrivia.toUpperCase(java.util.Locale.ROOT).startsWith(
+        "CREATE INDEX")) {
       throw new UnsupportedOperationException(
         "Lance does not support standard CREATE INDEX syntax. " +
           "Use: ALTER TABLE <table> CREATE INDEX <name> USING <method> (<columns>)")
     }
-    try {
-      delegate.parsePlan(sqlText)
-    } catch {
-      case _: ParseException => parse(sqlText)
+    if (LanceSparkSqlExtensionsParser.isLanceExtensionPriorityCommand(sqlText)) {
+      // No catch + delegate fallback: predicate already classified this as a Lance extension
+      // command. Delegating would re-trigger Spark's V2-rejection failure.
+      parse(LanceSparkSqlExtensionsParser.stripLeadingTrivia(sqlText))
+    } else {
+      try {
+        delegate.parsePlan(sqlText)
+      } catch {
+        case _: ParseException => parse(sqlText)
+      }
     }
   }
 
@@ -106,21 +123,35 @@ class LanceSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInt
     val parser = new LanceSqlExtensionsParser(tokenStream)
     parser.removeErrorListeners()
 
-    try {
-      // first, try parsing with potentially faster SLL mode
-      parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
-      astBuilder.visit(parser.singleStatement()).asInstanceOf[LogicalPlan]
-    } catch {
-      case _: ParseCancellationException =>
-        // if we fail, parse with LL mode
-        tokenStream.seek(0) // rewind input stream
-        parser.reset()
-
-        // Try Again.
-        parser.getInterpreter.setPredictionMode(PredictionMode.LL)
-        astBuilder.visit(parser.singleStatement()).asInstanceOf[LogicalPlan]
+    val visited =
+      try {
+        parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
+        astBuilder.visit(parser.singleStatement())
+      } catch {
+        case _: ParseCancellationException =>
+          tokenStream.seek(0)
+          parser.reset()
+          parser.getInterpreter.setPredictionMode(PredictionMode.LL)
+          astBuilder.visit(parser.singleStatement())
+      }
+    if (visited == null) {
+      throw new ParseCancellationException(
+        "Lance SQL extensions parser did not produce a LogicalPlan for: " + LanceSqlParserUtils.sanitizeSqlForError(
+          command))
     }
+    visited.asInstanceOf[LogicalPlan]
   }
+}
+
+object LanceSparkSqlExtensionsParser {
+
+  /** @see LanceSqlParserUtils#isLanceExtensionPriorityCommand */
+  def isLanceExtensionPriorityCommand(sqlText: String): Boolean =
+    LanceSqlParserUtils.isLanceExtensionPriorityCommand(sqlText)
+
+  /** @see LanceSqlParserUtils#stripLeadingTrivia */
+  def stripLeadingTrivia(sqlText: String): String =
+    LanceSqlParserUtils.stripLeadingTrivia(sqlText)
 }
 
 /* Copied from Apache Spark's to avoid dependency on Spark Internals */

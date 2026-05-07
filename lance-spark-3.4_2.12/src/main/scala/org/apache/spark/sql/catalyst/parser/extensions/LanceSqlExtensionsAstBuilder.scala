@@ -15,7 +15,7 @@ package org.apache.spark.sql.catalyst.parser.extensions
 
 import org.apache.spark.sql.catalyst.analysis.{UnresolvedIdentifier, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.parser.ParserInterface
-import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, LanceDropIndex, LanceNamedArgument, LogicalPlan, Optimize, SetUnenforcedPrimaryKey, ShowIndexes, UpdateColumnsBackfill, Vacuum}
+import org.apache.spark.sql.catalyst.plans.logical.{AddColumnsBackfill, AddIndex, LanceAnalyzeTable, LanceDropIndex, LanceNamedArgument, LogicalPlan, Optimize, SetUnenforcedPrimaryKey, ShowIndexes, UpdateColumnsBackfill, Vacuum}
 import org.lance.spark.utils.ParserUtils
 
 import scala.collection.JavaConverters._
@@ -112,9 +112,51 @@ class LanceSqlExtensionsAstBuilder(delegate: ParserInterface)
     SetUnenforcedPrimaryKey(table, columns)
   }
 
+  override def visitAnalyzeTable(ctx: LanceSqlExtensionsParser.AnalyzeTableContext)
+      : LanceAnalyzeTable = {
+    val table = UnresolvedIdentifier(visitMultipartIdentifier(ctx.multipartIdentifier()))
+    var forAllColumns = true // default when target clause is omitted
+    var columns: Seq[String] = Seq.empty
+    val target = ctx.analyzeTarget()
+    if (target != null) {
+      target match {
+        case forCols: LanceSqlExtensionsParser.AnalyzeForColumnsContext =>
+          forAllColumns = false
+          columns = visitColumnList(forCols.columnList())
+        case _: LanceSqlExtensionsParser.AnalyzeAllColumnsContext =>
+          forAllColumns = true
+        case other =>
+          // Defensive fallback: ANTLR-matched contexts are not a sealed hierarchy, so the
+          // compiler cannot prove exhaustiveness. If a future grammar revision adds a third
+          // analyzeTarget alternative without updating this visitor, prefer a clear parse-time
+          // error over a confusing runtime MatchError deep in the planner.
+          throw new IllegalStateException(
+            s"Unhandled analyzeTarget context: ${other.getClass.getSimpleName}")
+      }
+    }
+    val approx = ctx.approxFlag() != null
+    LanceAnalyzeTable(table, columns, forAllColumns, approx)
+  }
+
   override def visitStringLiteral(ctx: LanceSqlExtensionsParser.StringLiteralContext): String = {
-    val text = ctx.getText
-    text.stripPrefix("'").stripSuffix("'").stripPrefix("\"").stripSuffix("\"")
+    // Grammar permits `STRING+` (adjacent string tokens). Iterate and strip per-token instead
+    // of using ctx.getText() which keeps inner quotes when multiple tokens are concatenated.
+    val tokens = ctx.STRING()
+    val sb = new StringBuilder
+    var i = 0
+    while (i < tokens.size()) {
+      val raw = tokens.get(i).getText
+      val unquoted =
+        if (raw.length >= 2 && raw.charAt(0) == raw.charAt(raw.length - 1)
+          && (raw.charAt(0) == '\'' || raw.charAt(0) == '"')) {
+          raw.substring(1, raw.length - 1)
+        } else {
+          raw
+        }
+      sb.append(unquoted)
+      i += 1
+    }
+    sb.toString()
   }
 
   override def visitBooleanValue(ctx: LanceSqlExtensionsParser.BooleanValueContext)

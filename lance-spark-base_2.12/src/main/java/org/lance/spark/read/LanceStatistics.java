@@ -137,7 +137,41 @@ public class LanceStatistics implements Statistics, Serializable {
     }
     // Clamp to 1: integer truncation can round very small scaled sizes to 0, which
     // JoinSelection reads as "below threshold" and would unintentionally force a broadcast.
-    return new LanceStatistics(numRows, Math.max(sizeInBytes, 1L), columnStats);
+    return new LanceStatistics(
+        numRows, Math.max(sizeInBytes, 1L), filterToProjected(columnStats, projectedSchema));
+  }
+
+  /**
+   * Strip stats entries whose column name is not in the projected schema. Phase 1 callers usually
+   * pre-filter, but Phase 4's persisted-stats path can carry stats for columns the user didn't
+   * project. Spark's CBO would silently ignore them anyway; filtering here preserves the invariant
+   * "stats keys ⊆ projected schema field names" for downstream code that reads {@link
+   * #columnStats()} directly.
+   *
+   * <p>Nested-path entries (where {@code fieldNames().length > 1}) are also dropped. Spark's CBO
+   * resolves stats by exact {@link NamedReference} match against the leaf attribute referenced in
+   * the optimized plan, and our scan exposes only top-level columns through the projected schema —
+   * so a {@code FieldReference("a", "b")} entry would never match a planner lookup against {@code
+   * AttributeReference("a")} even if "a" is in the projected schema. Dropping the entry up front
+   * avoids carrying ballast through serialization and into executor-side reads.
+   */
+  private static Map<NamedReference, ColumnStatistics> filterToProjected(
+      Map<NamedReference, ColumnStatistics> input, StructType projectedSchema) {
+    if (input == null || input.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    java.util.Set<String> projected = new java.util.HashSet<>();
+    for (StructField f : projectedSchema.fields()) {
+      projected.add(f.name());
+    }
+    Map<NamedReference, ColumnStatistics> filtered = new java.util.LinkedHashMap<>();
+    for (Map.Entry<NamedReference, ColumnStatistics> e : input.entrySet()) {
+      String[] parts = e.getKey().fieldNames();
+      if (parts.length == 1 && projected.contains(parts[0])) {
+        filtered.put(e.getKey(), e.getValue());
+      }
+    }
+    return filtered;
   }
 
   private static long sumWidths(StructType schema) {

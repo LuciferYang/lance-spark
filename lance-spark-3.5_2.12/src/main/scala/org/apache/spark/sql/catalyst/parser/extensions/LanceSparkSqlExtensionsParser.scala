@@ -36,7 +36,8 @@ class LanceSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInt
   /**
    * Parse a string to a raw DataType without CHAR/VARCHAR replacement.
    */
-  def parseRawDataType(sqlText: String): DataType = throw new UnsupportedOperationException()
+  def parseRawDataType(sqlText: String): DataType = throw new UnsupportedOperationException(
+    "parseRawDataType is not supported by the Lance SQL extensions parser; use parseDataType instead.")
 
   /**
    * Parse a string to an Expression.
@@ -76,12 +77,43 @@ class LanceSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInt
 
   /**
    * Parse a string to a LogicalPlan.
+   *
+   * <p>For commands that exist in Spark's built-in parser AND in our extension grammar (currently
+   * just {@code ANALYZE TABLE}), we MUST try the extension grammar first — otherwise Spark's
+   * delegate parses {@code ANALYZE TABLE foo COMPUTE STATISTICS} into its own
+   * {@code AnalyzeTableCommand}, which the analyzer then rejects for V2 tables with
+   * NOT_SUPPORTED_COMMAND_FOR_V2_TABLE before our planner strategy ever runs. For all other
+   * statements (Lance-specific commands, plain DML, etc.) we delegate first and only fall through
+   * to the extension grammar on parse failure.
    */
   override def parsePlan(sqlText: String): LogicalPlan = {
-    try {
-      delegate.parsePlan(sqlText)
-    } catch {
-      case _: ParseException => parse(sqlText)
+    // Strip leading SQL trivia before the CREATE INDEX prefix check so hinted SQL like
+    // `/* hint */ CREATE INDEX ...` is also caught (sqlText.trim only handles whitespace).
+    val noTrivia = LanceSparkSqlExtensionsParser.stripLeadingTrivia(sqlText)
+    if (noTrivia != null && noTrivia.toUpperCase(java.util.Locale.ROOT).startsWith(
+        "CREATE INDEX")) {
+      throw new UnsupportedOperationException(
+        "Lance does not support standard CREATE INDEX syntax. " +
+          "Use: ALTER TABLE <table> CREATE INDEX <name> USING <method> (<columns>)")
+    }
+    if (LanceSparkSqlExtensionsParser.isLanceExtensionPriorityCommand(sqlText)) {
+      // The Lance extension grammar has no whitespace/comment skip rule; pre-strip leading
+      // trivia (whitespace + `--` line comments + `/* */` block comments) so the lexer sees a
+      // clean ANALYZE token. Without this, hinted SQL like `/* hint */ ANALYZE TABLE …`
+      // produces a token-recognition error and a null AST.
+      //
+      // No catch + delegate fallback here: the predicate has already classified this SQL as a
+      // Lance extension command, so any parse failure is a real Lance grammar error (typo in
+      // FOR COLUMNS list, etc.) and MUST surface to the caller. Delegating the original SQL to
+      // Spark's parser would re-trigger the very V2-rejection failure mode the priority
+      // routing was created to prevent.
+      parse(LanceSparkSqlExtensionsParser.stripLeadingTrivia(sqlText))
+    } else {
+      try {
+        delegate.parsePlan(sqlText)
+      } catch {
+        case _: ParseException => parse(sqlText)
+      }
     }
   }
 
@@ -98,21 +130,42 @@ class LanceSparkSqlExtensionsParser(delegate: ParserInterface) extends ParserInt
     val parser = new LanceSqlExtensionsParser(tokenStream)
     parser.removeErrorListeners()
 
-    try {
-      // first, try parsing with potentially faster SLL mode
-      parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
-      astBuilder.visit(parser.singleStatement()).asInstanceOf[LogicalPlan]
-    } catch {
-      case _: ParseCancellationException =>
-        // if we fail, parse with LL mode
-        tokenStream.seek(0) // rewind input stream
-        parser.reset()
+    val visited =
+      try {
+        // first, try parsing with potentially faster SLL mode
+        parser.getInterpreter.setPredictionMode(PredictionMode.SLL)
+        astBuilder.visit(parser.singleStatement())
+      } catch {
+        case _: ParseCancellationException =>
+          // if we fail, parse with LL mode
+          tokenStream.seek(0) // rewind input stream
+          parser.reset()
 
-        // Try Again.
-        parser.getInterpreter.setPredictionMode(PredictionMode.LL)
-        astBuilder.visit(parser.singleStatement()).asInstanceOf[LogicalPlan]
+          // Try Again.
+          parser.getInterpreter.setPredictionMode(PredictionMode.LL)
+          astBuilder.visit(parser.singleStatement())
+      }
+    if (visited == null) {
+      // ANTLR's visitor returns null when no visitor method matches the produced node. The
+      // unsafe asInstanceOf below would happily produce a null LogicalPlan; surface a clear
+      // parse error instead so the failure does not appear as an NPE in the analyzer phase.
+      throw new ParseCancellationException(
+        "Lance SQL extensions parser did not produce a LogicalPlan for: " +
+          LanceSqlParserUtils.sanitizeSqlForError(command))
     }
+    visited.asInstanceOf[LogicalPlan]
   }
+}
+
+object LanceSparkSqlExtensionsParser {
+
+  /** @see LanceSqlParserUtils#isLanceExtensionPriorityCommand */
+  def isLanceExtensionPriorityCommand(sqlText: String): Boolean =
+    LanceSqlParserUtils.isLanceExtensionPriorityCommand(sqlText)
+
+  /** @see LanceSqlParserUtils#stripLeadingTrivia */
+  def stripLeadingTrivia(sqlText: String): String =
+    LanceSqlParserUtils.stripLeadingTrivia(sqlText)
 }
 
 /* Copied from Apache Spark's to avoid dependency on Spark Internals */

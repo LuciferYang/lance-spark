@@ -234,6 +234,34 @@ public class LanceStatisticsTest {
   }
 
   @Test
+  public void testEstimateProjectedFiltersNonProjectedColumns() {
+    // Persisted-stats path can carry stats for columns the user didn't project. Make sure the
+    // 5-arg overload strips them so Spark's CBO never sees stats for columns it didn't request.
+    StructType full =
+        new StructType(
+            new StructField[] {
+              new StructField("a", DataTypes.LongType, true, null),
+              new StructField("b", DataTypes.LongType, true, null),
+              new StructField("c", DataTypes.LongType, true, null)
+            });
+    StructType projected =
+        new StructType(new StructField[] {new StructField("b", DataTypes.LongType, true, null)});
+    NamedReference colA = FieldReference.column("a");
+    NamedReference colB = FieldReference.column("b");
+    NamedReference colC = FieldReference.column("c");
+    Map<NamedReference, ColumnStatistics> input = new LinkedHashMap<>();
+    input.put(colA, new TestColumnStats(1L, 100L, 0L));
+    input.put(colB, new TestColumnStats(10L, 200L, 0L));
+    input.put(colC, new TestColumnStats(5L, 50L, 0L));
+
+    LanceStatistics stats = LanceStatistics.estimateProjected(500, 24L, full, projected, input);
+    assertEquals(1, stats.columnStats().size());
+    assertTrue(stats.columnStats().containsKey(colB));
+    assertFalse(stats.columnStats().containsKey(colA));
+    assertFalse(stats.columnStats().containsKey(colC));
+  }
+
+  @Test
   public void testEstimateProjectedFourArgYieldsEmptyColumnStats() {
     StructType full =
         new StructType(new StructField[] {new StructField("a", DataTypes.LongType, true, null)});

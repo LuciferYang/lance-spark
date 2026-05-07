@@ -78,22 +78,39 @@ public final class ColumnStatsAggregator {
       totalNulls += zone.getNullCount();
       Comparable<?> zMin = zone.getMin();
       Comparable<?> zMax = zone.getMax();
+      // Coerce non-finite bounds (NaN / ±Inf) to null. CBO uses min/max as hard predicate
+      // bounds, and a non-finite min compares "greater than" every finite value, producing
+      // empty ranges that prune rows satisfying the predicate. Symmetric with the persisted-
+      // path rejection in ColumnStatsCodec.
+      if (isNonFinite(zMin)) {
+        zMin = null;
+      }
+      if (isNonFinite(zMax)) {
+        zMax = null;
+      }
       if (zMin == null && zMax == null) {
         continue;
       }
       sawAnyValue = true;
 
-      Class<?> probe = zMin != null ? zMin.getClass() : zMax.getClass();
-      if (seenClass == null) {
-        seenClass = probe;
-      } else if (!seenClass.equals(probe)) {
-        return Optional.empty();
+      // Verify both zMin and zMax against `seenClass` independently. Checking only one (or
+      // checking against a `probe` derived from "the first non-null bound") would silently
+      // accept a malformed zone where zMin and zMax have different runtime classes — e.g.
+      // zone with Long min and String max — and the later compareTo() call would throw at
+      // query time instead of being rejected up front here.
+      if (zMin != null) {
+        if (seenClass == null) {
+          seenClass = zMin.getClass();
+        } else if (!seenClass.equals(zMin.getClass())) {
+          return Optional.empty();
+        }
       }
-      if (zMin != null && !seenClass.equals(zMin.getClass())) {
-        return Optional.empty();
-      }
-      if (zMax != null && !seenClass.equals(zMax.getClass())) {
-        return Optional.empty();
+      if (zMax != null) {
+        if (seenClass == null) {
+          seenClass = zMax.getClass();
+        } else if (!seenClass.equals(zMax.getClass())) {
+          return Optional.empty();
+        }
       }
 
       if (zMin != null && (globalMin == null || compare(zMin, globalMin) < 0)) {
@@ -117,8 +134,10 @@ public final class ColumnStatsAggregator {
    * Compute a conservative NDV estimate when every non-null zone has {@code min == max}. Each such
    * zone contributes exactly one distinct value; the column's NDV is bounded above by the number of
    * distinct zone-min values (could be lower if the same value appears in multiple zones, hence
-   * conservative). Returns {@code null} when any zone has {@code min != max}, since zone-level
-   * metadata cannot bound distinct count for that case.
+   * conservative). Returns {@code null} when any non-all-null zone fails the single-value test —
+   * either {@code zMin != zMax} (a multi-value zone) or {@code zMin}/{@code zMax} are partially
+   * {@code null} (a "half-null" zone with one bound unknown), since neither case lets zone-level
+   * metadata bound distinct count.
    *
    * <p>This is the Phase 3a "conservative NDV" path — most useful for low-cardinality columns (e.g.
    * {@code d_year}, {@code ca_state}, {@code cd_marital_status}) where the per-zone "single
@@ -129,6 +148,15 @@ public final class ColumnStatsAggregator {
     for (ZoneStats zone : zones) {
       Comparable<?> zMin = zone.getMin();
       Comparable<?> zMax = zone.getMax();
+      // Coerce non-finite bounds (NaN / ±Inf) to null — see aggregate(). A non-finite as a
+      // "single-distinct-value" would mislead the NDV count; better to treat the zone as
+      // partially-bounded and bail out.
+      if (isNonFinite(zMin)) {
+        zMin = null;
+      }
+      if (isNonFinite(zMax)) {
+        zMax = null;
+      }
       if (zMin == null && zMax == null) {
         continue; // all-null zone contributes nothing
       }
@@ -147,13 +175,33 @@ public final class ColumnStatsAggregator {
   }
 
   /**
+   * True for non-finite Float/Double values (NaN, ±Infinity). Treated as "no bound on this side"
+   * because a non-finite min/max mis-orders against finite values and would make CBO compute empty
+   * ranges. Mirrors {@link ColumnStatsCodec}'s encode/decode rejection.
+   */
+  private static boolean isNonFinite(Object value) {
+    if (value instanceof Float) {
+      Float f = (Float) value;
+      return f.isNaN() || f.isInfinite();
+    }
+    if (value instanceof Double) {
+      Double d = (Double) value;
+      return d.isNaN() || d.isInfinite();
+    }
+    return false;
+  }
+
+  /**
    * Concrete {@link ColumnStatistics} backed by zone-aggregated min/max/nullCount. Returns the
    * stored {@link Comparable} values directly — Spark's V2 → Catalyst bridge ({@code
    * V2ColumnStats}) calls {@code CatalystTypeConverters.convertToCatalyst} on each value with the
    * column's {@link org.apache.spark.sql.types.DataType} when the optimizer reads it, so passing
    * Java-native types (Integer, Long, Double, String) is safe.
    */
-  static final class ZoneStatsBackedColumnStatistics implements ColumnStatistics {
+  static final class ZoneStatsBackedColumnStatistics
+      implements ColumnStatistics, java.io.Serializable {
+    private static final long serialVersionUID = 1L;
+
     private final Comparable<?> min;
     private final Comparable<?> max;
     private final long nullCount;

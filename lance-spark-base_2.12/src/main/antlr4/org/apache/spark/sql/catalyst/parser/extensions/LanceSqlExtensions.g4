@@ -27,6 +27,16 @@ statement
     | OPTIMIZE multipartIdentifier (WITH '(' (namedArgument (',' namedArgument)*)? ')')?        #optimize
     | VACUUM multipartIdentifier (WITH '(' (namedArgument (',' namedArgument)*)? ')')?          #vacuum
     | ALTER TABLE multipartIdentifier SET UNENFORCED PRIMARY KEY '(' columnList ')'             #setUnenforcedPrimaryKey
+    | ANALYZE TABLE multipartIdentifier COMPUTE STATISTICS analyzeTarget? approxFlag?           #analyzeTable
+    ;
+
+analyzeTarget
+    : FOR ALL COLUMNS                            #analyzeAllColumns
+    | FOR COLUMNS columnList                     #analyzeForColumns
+    ;
+
+approxFlag
+    : APPROX
     ;
 
 multipartIdentifier
@@ -67,15 +77,21 @@ number
     ;
 
 ADD: 'ADD';
+ALL: 'ALL';
 ALTER: 'ALTER';
+ANALYZE: 'ANALYZE';
+APPROX: 'APPROX';
 COLUMNS: 'COLUMNS';
+COMPUTE: 'COMPUTE';
 CREATE: 'CREATE';
 DROP: 'DROP';
+FOR: 'FOR';
 FROM: 'FROM';
 IN: 'IN';
 INDEX: 'INDEX';
 INDEXES: 'INDEXES';
 KEY: 'KEY';
+STATISTICS: 'STATISTICS';
 OPTIMIZE: 'OPTIMIZE';
 PRIMARY: 'PRIMARY';
 SET: 'SET';

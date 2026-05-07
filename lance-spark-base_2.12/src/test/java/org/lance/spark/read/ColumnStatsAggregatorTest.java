@@ -213,6 +213,120 @@ class ColumnStatsAggregatorTest {
   }
 
   @Test
+  @DisplayName("zone with only max non-null (min == null) is handled — class probe falls through")
+  void zoneWithOnlyMaxNonNull() {
+    // Spark zonemap can produce a zone where min is unknown but max is recorded; the aggregator
+    // must not throw on the null-min path and must still report max.
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(Arrays.asList(zone(0, null, 99L, 0L)));
+    assertTrue(stats.isPresent());
+    assertFalse(stats.get().min().isPresent());
+    assertEquals(99L, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("NaN min is coerced to null — neither pollutes global min nor falsely bounds CBO")
+  void nanMinCoercedToNull() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(zone(0, Double.NaN, 5.0d, 0L), zone(1, 1.0d, 3.0d, 0L)));
+    assertTrue(stats.isPresent());
+    // Global min should be 1.0 from the second zone, NOT NaN (which would otherwise be reported
+    // and false-bound any predicate filter the CBO derives).
+    assertEquals(1.0d, stats.get().min().get());
+    assertEquals(5.0d, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("NaN max is coerced to null")
+  void nanMaxCoercedToNull() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(zone(0, 1.0d, Double.NaN, 0L), zone(1, 2.0d, 7.0d, 0L)));
+    assertTrue(stats.isPresent());
+    assertEquals(1.0d, stats.get().min().get());
+    assertEquals(7.0d, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("Float.NaN as both bounds is treated as all-null zone")
+  void floatNaNBothBoundsTreatedAsAllNull() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(zone(0, Float.NaN, Float.NaN, 0L), zone(1, 1.0f, 5.0f, 0L)));
+    assertTrue(stats.isPresent());
+    assertEquals(1.0f, stats.get().min().get());
+    assertEquals(5.0f, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("Infinity min is coerced to null — symmetric with NaN coercion (R18 parity)")
+  void positiveInfinityMinCoercedToNull() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(zone(0, Double.POSITIVE_INFINITY, 5.0d, 0L), zone(1, 1.0d, 3.0d, 0L)));
+    assertTrue(stats.isPresent());
+    // Global min should be 1.0 from the second zone, NOT +Inf (which would prune all finite
+    // predicate matches).
+    assertEquals(1.0d, stats.get().min().get());
+    assertEquals(5.0d, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("Negative infinity max is coerced to null")
+  void negativeInfinityMaxCoercedToNull() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(zone(0, 1.0d, Double.NEGATIVE_INFINITY, 0L), zone(1, 2.0d, 7.0d, 0L)));
+    assertTrue(stats.isPresent());
+    assertEquals(1.0d, stats.get().min().get());
+    assertEquals(7.0d, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("Float Infinity as both bounds is treated as all-null zone")
+  void floatInfinityBothBoundsTreatedAsAllNull() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(
+                zone(0, Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY, 0L),
+                zone(1, 1.0f, 5.0f, 0L)));
+    assertTrue(stats.isPresent());
+    assertEquals(1.0f, stats.get().min().get());
+    assertEquals(5.0f, stats.get().max().get());
+  }
+
+  @Test
+  @DisplayName("conservative NDV: Infinity-bounded zones do not count as a single distinct value")
+  void conservativeNdvIgnoresInfinityZones() {
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(
+                zone(0, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, 0L),
+                zone(1, 1.0d, 1.0d, 0L),
+                zone(2, 2.0d, 2.0d, 0L)));
+    assertTrue(stats.isPresent());
+    assertTrue(stats.get().distinctCount().isPresent());
+    assertEquals(2L, stats.get().distinctCount().getAsLong());
+  }
+
+  @Test
+  @DisplayName("conservative NDV: NaN-bounded zones do not count as a single distinct value")
+  void conservativeNdvIgnoresNaNZones() {
+    // Without coercion, a NaN-only zone with min==max (NaN.equals(NaN)==true via Float.equals)
+    // would falsely contribute one distinct value. After coercion, it's treated as all-null.
+    Optional<ColumnStatistics> stats =
+        ColumnStatsAggregator.aggregate(
+            Arrays.asList(
+                zone(0, Double.NaN, Double.NaN, 0L),
+                zone(1, 1.0d, 1.0d, 0L),
+                zone(2, 2.0d, 2.0d, 0L)));
+    assertTrue(stats.isPresent());
+    assertTrue(stats.get().distinctCount().isPresent());
+    assertEquals(2L, stats.get().distinctCount().getAsLong());
+  }
+
+  @Test
   @DisplayName("single column spans many fragments — pure reduction is order-independent")
   void manyFragmentsReductionIsCommutative() {
     List<ZoneStats> ascending =

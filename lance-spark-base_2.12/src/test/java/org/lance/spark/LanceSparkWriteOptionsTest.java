@@ -44,6 +44,23 @@ public class LanceSparkWriteOptionsTest {
   }
 
   @Test
+  public void fileFormatVersionUsesValueEquality() {
+    LanceSparkWriteOptions left =
+        LanceSparkWriteOptions.builder()
+            .datasetUri(TEMP_URL)
+            .fileFormatVersion(new String("stable"))
+            .build();
+    LanceSparkWriteOptions right =
+        LanceSparkWriteOptions.builder()
+            .datasetUri(TEMP_URL)
+            .fileFormatVersion(new String("stable"))
+            .build();
+
+    assertEquals(left, right);
+    assertEquals(left.hashCode(), right.hashCode());
+  }
+
+  @Test
   public void withVersionCopiesOptions() {
     LanceSparkWriteOptions base = LanceSparkWriteOptions.from(TEMP_URL);
     LanceSparkWriteOptions pinned = base.withVersion(3L);
@@ -120,6 +137,7 @@ public class LanceSparkWriteOptionsTest {
     options.put("max_bytes_per_file", "1048576");
     options.put("batch_size", "256");
     options.put("enable_stable_row_ids", "true");
+    options.put("blob_pack_file_size_threshold", "2147483648");
 
     final LanceSparkWriteOptions writeOptions =
         LanceSparkWriteOptions.builder().datasetUri(TEMP_URL).fromOptions(options).build();
@@ -130,5 +148,6 @@ public class LanceSparkWriteOptionsTest {
     assertEquals(1048576L, writeOptions.getMaxBytesPerFile());
     assertEquals(256, writeOptions.getBatchSize());
     assertTrue(writeOptions.getEnableStableRowIds());
+    assertEquals(Long.valueOf(2147483648L), writeOptions.getBlobPackFileSizeThreshold());
   }
 }

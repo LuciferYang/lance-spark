@@ -82,26 +82,37 @@ case class AddIndexExec(
       return Seq(new GenericInternalRow(Array[Any](0L, UTF8String.fromString(indexName))))
     }
 
-    val uuid = UUID.randomUUID()
     val indexType = IndexUtils.buildIndexType(method)
-
     val dataset = Utils.openDatasetBuilder(readOptions).build()
 
+    if (indexType == IndexType.ZONEMAP) {
+      return runZonemapDistributed(dataset, lanceDataset, readOptions, fragmentIds)
+    }
+
+    val uuid = UUID.randomUUID()
+    // Wrap createIndexJob.run() in the same try-finally that closes `dataset`. Previously
+    // run() was called BEFORE the try block — a throw from the distributed build path would
+    // leak the dataset handle and its underlying JNI resources.
+    //
+    // Use NonFatal (not bare Throwable) so JVM-fatal errors (OOM, LinkageError),
+    // InterruptedException, and ControlThrowable propagate untouched. Closing JNI handles
+    // during a fatal error risks executor hang or masks the original cause. Symmetric with
+    // the catch ladder in `ZonemapFragmentTask.execute` below — both paths should treat
+    // fatal errors the same way.
     val indexBuildResult =
-      createIndexJob(dataset, lanceDataset, readOptions, uuid.toString, fragmentIds).run()
+      try {
+        createIndexJob(dataset, lanceDataset, readOptions, uuid.toString, fragmentIds).run()
+      } catch {
+        case scala.util.control.NonFatal(e) =>
+          dataset.close()
+          throw e
+      }
 
     try {
-      // Merge index metadata after all fragments are indexed
+      // Merge index metadata after all fragments are indexed.
       dataset.mergeIndexMetadata(uuid.toString, indexType, Optional.empty())
 
-      val fieldIdByName = dataset.getLanceSchema.fields().asScala
-        .map(f => f.getName -> f.getId)
-        .toMap
-      val fieldIds = columns.map { column =>
-        fieldIdByName.getOrElse(
-          column,
-          throw new IllegalArgumentException(s"Cannot find index column in Lance schema: $column"))
-      }.toList
+      val fieldIds = resolveFieldIdsOrThrow(dataset, columns)
 
       val datasetVersion = dataset.version()
 
@@ -148,6 +159,165 @@ case class AddIndexExec(
       UTF8String.fromString(indexName))))
   }
 
+  /**
+   * Distributed ZONEMAP build. Each task indexes one fragment with a fresh per-task UUID (no
+   * `withIndexUUID`), so each writes to its own `&lt;uuid&gt;/zonemap.lance` directory. The driver
+   * commits N IndexMetadata entries under a shared name in one transaction; lance-core's read
+   * path serves multi-segment indexes natively.
+   *
+   * <p>A shared UUID would race on the fixed `zonemap.lance` filename — ZoneMap, unlike BTree, has
+   * no per-task file-name namespacing or merge step.
+   *
+   * @param dataset      open Lance dataset; this method closes it
+   * @param lanceDataset V2 catalog view, for namespace credentials
+   * @param readOptions  read config forwarded to executor tasks
+   * @param fragmentIds  fragments to index, one task each
+   */
+  private def runZonemapDistributed(
+      dataset: Dataset,
+      lanceDataset: LanceDataset,
+      readOptions: LanceSparkReadOptions,
+      fragmentIds: List[Integer]): Seq[InternalRow] = {
+    try {
+      // Validate columns up-front (fail-fast before parallelize) and reuse at commit time —
+      // schema cannot drift within one dataset handle.
+      val fieldIds = resolveFieldIdsOrThrow(dataset, columns)
+
+      val (nsImpl, nsProps, tableId, initialStorageOpts) =
+        extractNamespaceInfo(lanceDataset, readOptions)
+      val encodedReadOptions = encode(readOptions)
+      val argsJson = IndexUtils.toJson(args)
+
+      // Capture the read-version up front. `dataset.version()` returns the manifest version
+      // bound at handle-open time and is constant for the lifetime of this Dataset object —
+      // so this call is semantically the same whether we make it before or after parallelize.
+      // Capturing here is a readability improvement (commits the version to a local before
+      // the long-running task phase) rather than a fix for any real race. Conflict detection
+      // for concurrent writers happens at commit time via Transaction.readVersion() against
+      // the manifest, which Lance handles independently of when this method reads version().
+      val datasetVersion = dataset.version()
+
+      val tasks = fragmentIds.map { fid =>
+        ZonemapFragmentTask(
+          encodedReadOptions,
+          columns.toList,
+          method,
+          argsJson,
+          indexName,
+          fid,
+          nsImpl,
+          nsProps,
+          tableId,
+          initialStorageOpts)
+      }
+
+      // Defensive: Spark rejects parallelize(_, numSlices=0). Upstream `fragmentIds.isEmpty`
+      // already short-circuits before reaching here, but pin the invariant locally so a future
+      // refactor that moves the empty check won't silently break with a cryptic Spark error.
+      if (tasks.isEmpty) {
+        throw new IllegalStateException(
+          "runZonemapDistributed called with empty fragmentIds — upstream empty-check should " +
+            "have short-circuited")
+      }
+
+      val encodedResults: Array[String] = session.sparkContext
+        .parallelize(tasks, tasks.size)
+        .map(_.execute())
+        .collect()
+      val perFragment: Array[ZonemapFragmentResult] = encodedResults.zipWithIndex.map {
+        case (encoded, idx) =>
+          try {
+            decode[ZonemapFragmentResult](encoded)
+          } catch {
+            case e: Exception =>
+              // Use the actual fragment id, not just the array index, so an operator reading
+              // the log can trace the failure to the specific input fragment without first
+              // mapping idx → tasks(idx).fragmentId.
+              val fragId = tasks(idx).fragmentId
+              throw new IllegalStateException(
+                s"Failed to decode ZONEMAP build result for fragment $fragId " +
+                  s"(task index $idx): ${e.getMessage}",
+                e)
+          }
+      }
+
+      // One Index entry per fragment, all sharing the index name; the read path groups by name.
+      val newIndexes = perFragment.toList.map { r =>
+        val builder = Index.builder()
+          .uuid(UUID.fromString(r.uuid))
+          .name(indexName)
+          .fields(fieldIds.map(java.lang.Integer.valueOf).asJava)
+          .datasetVersion(datasetVersion)
+          .indexDetails(r.indexDetails)
+          .indexVersion(r.indexVersion)
+          .indexType(IndexType.ZONEMAP)
+          .fragments(Collections.singletonList(java.lang.Integer.valueOf(r.fragmentId)))
+        r.createdAt.foreach(builder.createdAt)
+        builder.build()
+      }.asJava
+
+      val removedIndices = dataset.getIndexes.asScala
+        .filter(_.name() == indexName)
+        .toList.asJava
+
+      val op = AddIndexOperation.builder()
+        .withNewIndices(newIndexes)
+        .withRemovedIndices(removedIndices)
+        .build()
+      val txn = new Transaction.Builder()
+        .readVersion(datasetVersion)
+        .operation(op)
+        .build()
+      try {
+        val newDataset = new CommitBuilder(dataset)
+          .writeParams(readOptions.getStorageOptions)
+          .execute(txn)
+        newDataset.close()
+      } finally {
+        txn.close()
+      }
+    } finally {
+      dataset.close()
+    }
+    Seq(new GenericInternalRow(Array[Any](
+      fragmentIds.size.toLong,
+      UTF8String.fromString(indexName))))
+  }
+
+  /** Extract namespace credentials info from the catalog, mirroring `createIndexJob`. */
+  private def extractNamespaceInfo(
+      lanceDataset: LanceDataset,
+      readOptions: LanceSparkReadOptions): (
+      Option[String],
+      Option[Map[String, String]],
+      Option[List[String]],
+      Option[Map[String, String]]) = catalog match {
+    case nsCatalog: BaseLanceNamespaceSparkCatalog =>
+      (
+        Option(nsCatalog.getNamespaceImpl),
+        Option(nsCatalog.getNamespaceProperties).map(_.asScala.toMap),
+        Option(readOptions.getTableId).map(_.asScala.toList),
+        Option(lanceDataset.getInitialStorageOptions).map(_.asScala.toMap))
+    case _ => (None, None, None, None)
+  }
+
+  /**
+   * Resolve column names to Lance field IDs. Throws IllegalArgumentException if any column is
+   * absent; shared by both build paths so failure modes stay uniform.
+   */
+  private def resolveFieldIdsOrThrow(
+      dataset: Dataset,
+      columnsToResolve: Seq[String]): List[Int] = {
+    val fieldIdByName = dataset.getLanceSchema.fields().asScala
+      .map(f => f.getName -> f.getId)
+      .toMap
+    columnsToResolve.map { column =>
+      fieldIdByName.getOrElse(
+        column,
+        throw new IllegalArgumentException(s"Cannot find index column in Lance schema: $column"))
+    }.toList
+  }
+
   private def createIndexJob(
       dataset: Dataset,
       lanceDataset: LanceDataset,
@@ -155,19 +325,8 @@ case class AddIndexExec(
       uuid: String,
       fragmentIds: List[Integer]): IndexJob = {
     // Get namespace info from catalog if available (for credential vending on workers)
-    val (nsImpl, nsProps, tableId, initialStorageOpts): (
-        Option[String],
-        Option[Map[String, String]],
-        Option[List[String]],
-        Option[Map[String, String]]) = catalog match {
-      case nsCatalog: BaseLanceNamespaceSparkCatalog =>
-        (
-          Option(nsCatalog.getNamespaceImpl),
-          Option(nsCatalog.getNamespaceProperties).map(_.asScala.toMap),
-          Option(readOptions.getTableId).map(_.asScala.toList),
-          Option(lanceDataset.getInitialStorageOptions).map(_.asScala.toMap))
-      case _ => (None, None, None, None)
-    }
+    val (nsImpl, nsProps, tableId, initialStorageOpts) =
+      extractNamespaceInfo(lanceDataset, readOptions)
 
     IndexUtils.buildIndexType(method) match {
       case IndexType.BTREE =>
@@ -347,6 +506,124 @@ case class FragmentIndexTask(
       } else {
         encode(None: Option[IndexBuildResult])
       }
+    } finally {
+      dataset.close()
+    }
+  }
+}
+
+/** Per-fragment build metadata returned by {@link ZonemapFragmentTask}. */
+case class ZonemapFragmentResult(
+    uuid: String,
+    fragmentId: Int,
+    indexDetails: Array[Byte],
+    indexVersion: Int,
+    createdAt: Option[Instant])
+  extends Serializable
+
+/**
+ * Per-fragment ZONEMAP build task. Calls `dataset.createIndex` with `withFragmentIds=[id]` and no
+ * `withIndexUUID`, so lance-core takes the uncommitted path with a fresh per-task UUID. The
+ * returned metadata is collected by the driver into a multi-segment commit.
+ */
+case class ZonemapFragmentTask(
+    encodedReadOptions: String,
+    columns: List[String],
+    method: String,
+    argsJson: String,
+    indexName: String,
+    fragmentId: Int,
+    namespaceImpl: Option[String],
+    namespaceProperties: Option[Map[String, String]],
+    tableId: Option[List[String]],
+    initialStorageOptions: Option[Map[String, String]])
+  extends Serializable {
+
+  def execute(): String = {
+    try {
+      buildAndEncode()
+    } catch {
+      // Preserve the broad exception class (IAE vs ISE vs other) so callers matching on
+      // type still match — only the message gains fragment-id context. Use
+      // scala.util.control.NonFatal as the outer guard: it excludes VirtualMachineError
+      // (OOM), ThreadDeath, InterruptedException, LinkageError, and ControlThrowable.
+      // Letting those propagate untouched is the right policy:
+      //   - JVM-fatal errors must crash the executor immediately rather than being wrapped
+      //     into a recoverable-looking RuntimeException (the executor JVM is in undefined
+      //     state after such an error).
+      //   - InterruptedException is Spark's task-cancellation signal; wrapping it as
+      //     RuntimeException would swallow the interrupt status and break cancellation.
+      //   - LinkageError typically indicates an incompatible JNI/jar version; surfacing it
+      //     as itself preserves the diagnostic.
+      //
+      // Note on subclass narrowing: a thrown `NumberFormatException` (which extends
+      // IllegalArgumentException) is re-thrown as a plain IllegalArgumentException with the
+      // NumberFormatException as the wrapped cause. Callers matching on the LEAF subclass
+      // (`case e: NumberFormatException`) will no longer match, but the cause chain
+      // (getCause / instanceof) preserves the original type. Trade-off accepted: the
+      // fragment-id context is more valuable for log analysis than preserving the leaf
+      // subclass identity through the rethrow.
+      case e: IllegalArgumentException =>
+        throw new IllegalArgumentException(
+          s"ZONEMAP build failed for fragment $fragmentId: ${e.getMessage}",
+          e)
+      case e: IllegalStateException =>
+        throw new IllegalStateException(
+          s"ZONEMAP build failed for fragment $fragmentId: ${e.getMessage}",
+          e)
+      case scala.util.control.NonFatal(e) =>
+        // Catches any other non-fatal exception (lance-core errors, IOException, custom
+        // RuntimeException subclasses) and tags with fragment-id context. Re-thrown as
+        // RuntimeException so Spark's TaskFailedReason serialises it cleanly back to the
+        // driver, where the per-task index decoder will surface the wrapped cause.
+        throw new RuntimeException(
+          s"ZONEMAP build failed for fragment $fragmentId (${e.getClass.getSimpleName}): " +
+            s"${e.getMessage}",
+          e)
+    }
+  }
+
+  private def buildAndEncode(): String = {
+    val readOptions = decode[LanceSparkReadOptions](encodedReadOptions)
+    val params = IndexParams.builder()
+      .setScalarIndexParams(ScalarIndexParams.create(
+        IndexUtils.buildScalarIndexParamType(method),
+        argsJson))
+      .build()
+
+    val indexOptions = IndexOptions
+      .builder(java.util.Arrays.asList(columns: _*), IndexType.ZONEMAP, params)
+      .replace(true)
+      .withIndexName(indexName)
+      .withFragmentIds(Collections.singletonList(java.lang.Integer.valueOf(fragmentId)))
+      .build()
+
+    val dataset = Utils.openDatasetBuilder(readOptions)
+      .initialStorageOptions(initialStorageOptions.map(_.asJava).orNull)
+      .runtimeNamespace(
+        namespaceImpl.orNull,
+        namespaceProperties.map(_.asJava).orNull,
+        tableId.map(_.asJava).orNull)
+      .build()
+
+    try {
+      val createdIndex = dataset.createIndex(indexOptions)
+      val details = createdIndex.indexDetails()
+      if (!details.isPresent || details.get().length == 0) {
+        throw new IllegalStateException(
+          s"Index ${createdIndex.name()} was created without index details")
+      }
+      val createdAt = if (createdIndex.createdAt().isPresent) {
+        Some(createdIndex.createdAt().get())
+      } else {
+        None
+      }
+      encode(ZonemapFragmentResult(
+        uuid = createdIndex.uuid().toString,
+        fragmentId = fragmentId,
+        indexDetails = details.get(),
+        indexVersion = createdIndex.indexVersion(),
+        createdAt = createdAt))
     } finally {
       dataset.close()
     }
@@ -562,6 +839,7 @@ object IndexUtils {
     method.toLowerCase match {
       case "btree" => IndexType.BTREE
       case "fts" => IndexType.INVERTED
+      case "zonemap" => IndexType.ZONEMAP
       case other => throw new UnsupportedOperationException(s"Unsupported index method: $other")
     }
   }
@@ -570,6 +848,7 @@ object IndexUtils {
     method.toLowerCase match {
       case "btree" => "btree"
       case "fts" => "inverted"
+      case "zonemap" => "zonemap"
       case other => throw new UnsupportedOperationException(s"Unsupported index method: $other")
     }
   }

@@ -56,6 +56,7 @@ public class LanceSparkReadOptions implements Serializable {
   public static final String CONFIG_INDEX_CACHE_SIZE = "index_cache_size";
   public static final String CONFIG_METADATA_CACHE_SIZE = "metadata_cache_size";
   public static final String CONFIG_BATCH_SIZE = "batch_size";
+  public static final String CONFIG_BATCH_READAHEAD = "batch_readahead";
   public static final String CONFIG_TOP_N_PUSH_DOWN = "topN_push_down";
 
   public static final String CONFIG_NEAREST = "nearest";
@@ -99,6 +100,7 @@ public class LanceSparkReadOptions implements Serializable {
   private static final boolean DEFAULT_PUSH_DOWN_FILTERS = true;
   // Changed from 512 to 8192 for better OLAP scan performance (33x improvement)
   private static final int DEFAULT_BATCH_SIZE = 8192;
+  private static final int DEFAULT_BATCH_READAHEAD = 16;
   private static final boolean DEFAULT_TOP_N_PUSH_DOWN = true;
   private static final boolean DEFAULT_EXECUTOR_CREDENTIAL_REFRESH = true;
 
@@ -111,6 +113,7 @@ public class LanceSparkReadOptions implements Serializable {
   private final Integer indexCacheSize;
   private final Integer metadataCacheSize;
   private final int batchSize;
+  private final int batchReadahead;
   private transient Query nearest;
   private final boolean topNPushDown;
   private final Map<String, String> storageOptions;
@@ -141,6 +144,7 @@ public class LanceSparkReadOptions implements Serializable {
     this.indexCacheSize = builder.indexCacheSize;
     this.metadataCacheSize = builder.metadataCacheSize;
     this.batchSize = builder.batchSize;
+    this.batchReadahead = builder.batchReadahead;
     this.nearest = builder.nearest;
     this.topNPushDown = builder.topNPushDown;
     this.storageOptions = new HashMap<>(builder.storageOptions);
@@ -254,6 +258,10 @@ public class LanceSparkReadOptions implements Serializable {
     return batchSize;
   }
 
+  public int getBatchReadahead() {
+    return batchReadahead;
+  }
+
   public Query getNearest() {
     return nearest;
   }
@@ -321,6 +329,7 @@ public class LanceSparkReadOptions implements Serializable {
         .indexCacheSize(this.indexCacheSize)
         .metadataCacheSize(this.metadataCacheSize)
         .batchSize(this.batchSize)
+        .batchReadahead(this.batchReadahead)
         .nearest(this.nearest)
         .topNPushDown(this.topNPushDown)
         .storageOptions(this.storageOptions)
@@ -332,6 +341,14 @@ public class LanceSparkReadOptions implements Serializable {
   }
 
   /**
+   * Default block size (1 MB) used for cloud object storage paths when no explicit block_size is
+   * set. A larger block size causes the Lance I/O scheduler to coalesce more small page-level reads
+   * into fewer, larger requests, reducing the per-request latency overhead on high-latency
+   * networks.
+   */
+  private static final int CLOUD_DEFAULT_BLOCK_SIZE = 1_048_576;
+
+  /**
    * Converts this to Lance ReadOptions for the native library.
    *
    * @return ReadOptions for the Lance native library
@@ -341,6 +358,8 @@ public class LanceSparkReadOptions implements Serializable {
     builder.setSession(LanceRuntime.session());
     if (blockSize != null) {
       builder.setBlockSize(blockSize);
+    } else if (isCloudPath(datasetUri)) {
+      builder.setBlockSize(CLOUD_DEFAULT_BLOCK_SIZE);
     }
     if (version != null) {
       builder.setVersion(version);
@@ -355,6 +374,21 @@ public class LanceSparkReadOptions implements Serializable {
       builder.setStorageOptions(storageOptions);
     }
     return builder.build();
+  }
+
+  private static boolean isCloudPath(String path) {
+    if (path == null) {
+      return false;
+    }
+    String lower = path.toLowerCase();
+    return lower.startsWith("s3://")
+        || lower.startsWith("s3a://")
+        || lower.startsWith("gs://")
+        || lower.startsWith("az://")
+        || lower.startsWith("abfs://")
+        || lower.startsWith("abfss://")
+        || lower.startsWith("oss://")
+        || lower.startsWith("bos://");
   }
 
   private void writeObject(ObjectOutputStream out) throws IOException {
@@ -376,6 +410,7 @@ public class LanceSparkReadOptions implements Serializable {
     LanceSparkReadOptions that = (LanceSparkReadOptions) o;
     return pushDownFilters == that.pushDownFilters
         && batchSize == that.batchSize
+        && batchReadahead == that.batchReadahead
         && topNPushDown == that.topNPushDown
         && executorCredentialRefresh == that.executorCredentialRefresh
         && Objects.equals(nearest, that.nearest)
@@ -398,6 +433,7 @@ public class LanceSparkReadOptions implements Serializable {
         indexCacheSize,
         metadataCacheSize,
         batchSize,
+        batchReadahead,
         nearest,
         topNPushDown,
         storageOptions,
@@ -415,6 +451,7 @@ public class LanceSparkReadOptions implements Serializable {
     private Integer indexCacheSize;
     private Integer metadataCacheSize;
     private int batchSize = DEFAULT_BATCH_SIZE;
+    private int batchReadahead = DEFAULT_BATCH_READAHEAD;
     private boolean topNPushDown = DEFAULT_TOP_N_PUSH_DOWN;
     private Map<String, String> storageOptions = new HashMap<>();
     private LanceNamespace namespace;
@@ -470,6 +507,11 @@ public class LanceSparkReadOptions implements Serializable {
 
     public Builder batchSize(int batchSize) {
       this.batchSize = batchSize;
+      return this;
+    }
+
+    public Builder batchReadahead(int batchReadahead) {
+      this.batchReadahead = batchReadahead;
       return this;
     }
 
@@ -558,6 +600,11 @@ public class LanceSparkReadOptions implements Serializable {
         int parsedBatchSize = Integer.parseInt(opts.get(CONFIG_BATCH_SIZE));
         Preconditions.checkArgument(parsedBatchSize > 0, "batch_size must be positive");
         this.batchSize = parsedBatchSize;
+      }
+      if (opts.containsKey(CONFIG_BATCH_READAHEAD)) {
+        int parsedReadahead = Integer.parseInt(opts.get(CONFIG_BATCH_READAHEAD));
+        Preconditions.checkArgument(parsedReadahead > 0, "batch_readahead must be positive");
+        this.batchReadahead = parsedReadahead;
       }
       if (opts.containsKey(CONFIG_TOP_N_PUSH_DOWN)) {
         this.topNPushDown = Boolean.parseBoolean(opts.get(CONFIG_TOP_N_PUSH_DOWN));

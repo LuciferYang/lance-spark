@@ -103,7 +103,7 @@ public class BenchmarkBase {
   protected void writeAsLance(Dataset<Row> df, String tableName) {
     df.write()
         .format("lance")
-        .mode(SaveMode.Overwrite)
+        .mode(SaveMode.ErrorIfExists)
         .save(lanceTablePath(tableName));
   }
 

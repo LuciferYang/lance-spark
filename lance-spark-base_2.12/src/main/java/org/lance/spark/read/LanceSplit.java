@@ -39,7 +39,9 @@ public class LanceSplit implements Serializable {
   }
 
   /** Result of scan planning containing splits, resolved version, and per-fragment row counts. */
-  public static class ScanPlanResult {
+  public static class ScanPlanResult implements Serializable {
+    private static final long serialVersionUID = 1L;
+
     private final List<LanceSplit> splits;
     private final long resolvedVersion;
 
@@ -74,18 +76,47 @@ public class LanceSplit implements Serializable {
    * version. The resolved version should be passed to workers to ensure snapshot isolation.
    */
   public static ScanPlanResult planScan(LanceSparkReadOptions readOptions) {
-    try (Dataset dataset = Utils.openDatasetBuilder(readOptions).build()) {
-      List<Fragment> fragments = dataset.getFragments();
-      List<LanceSplit> splits = new ArrayList<>(fragments.size());
-      Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());
-      for (Fragment fragment : fragments) {
-        int id = fragment.getId();
-        splits.add(new LanceSplit(Collections.singletonList(id)));
-        fragmentRowCounts.put(id, fragment.metadata().getNumRows());
-      }
-      long resolvedVersion = dataset.getVersion().getId();
-      return new ScanPlanResult(splits, resolvedVersion, fragmentRowCounts);
+    return planScan(readOptions, Collections.emptyMap());
+  }
+
+  /**
+   * Generates splits and resolves the dataset version, forwarding {@code initialStorageOptions}
+   * from the namespace layer.
+   *
+   * <p>Namespace-managed tables (HMS, REST catalog, LanceDB cloud) emit vended credentials (STS
+   * tokens, region hints) via {@link org.lance.namespace.LanceNamespace#describeTable}'s {@code
+   * storageOptions} — these must be merged into the Dataset open or the open fails with 403.
+   * Callers that have {@code initialStorageOptions} from the DataSourceV2 construction path MUST
+   * use this overload.
+   */
+  public static ScanPlanResult planScan(
+      LanceSparkReadOptions readOptions, Map<String, String> initialStorageOptions) {
+    try (Dataset dataset =
+        Utils.openDatasetBuilder(readOptions)
+            .initialStorageOptions(initialStorageOptions)
+            .build()) {
+      return planScan(dataset);
     }
+  }
+
+  /**
+   * Generates splits, resolves the dataset version, and collects per-fragment row counts from an
+   * already-open {@link Dataset}. The dataset is neither opened nor closed by this method — caller
+   * retains full ownership. Used by {@link LanceScanBuilder#build()} to reuse the pushdown-phase
+   * Dataset handle and avoid a second S3 manifest round-trip during {@link
+   * LanceScan#planInputPartitions()}.
+   */
+  public static ScanPlanResult planScan(Dataset dataset) {
+    List<Fragment> fragments = dataset.getFragments();
+    List<LanceSplit> splits = new ArrayList<>(fragments.size());
+    Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());
+    for (Fragment fragment : fragments) {
+      int id = fragment.getId();
+      splits.add(new LanceSplit(Collections.singletonList(id)));
+      fragmentRowCounts.put(id, fragment.metadata().getNumRows());
+    }
+    long resolvedVersion = dataset.getVersion().getId();
+    return new ScanPlanResult(splits, resolvedVersion, fragmentRowCounts);
   }
 
   /**

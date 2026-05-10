@@ -220,8 +220,8 @@ public class LanceFragmentScannerTest {
    * <p>Strategy: hand a real, loadable {@link LanceNamespace} impl to the partition. If the gate
    * regresses (rebuild not skipped), {@code LanceNamespace.connect} would succeed via {@code
    * Class.forName}, {@link RecordingNamespace#initialize} would run, and {@code
-   * readOptions.setNamespace(...)} would fire — all observable here. The bogus dataset URI lets the
-   * outer {@code Utils.openDatasetBuilder().build()} call fail predictably, since the gate runs
+   * readOptions.withNamespace(...)} would fire — all observable here. The bogus dataset URI lets
+   * the outer {@code Utils.openDatasetBuilder().build()} call fail predictably, since the gate runs
    * <i>before</i> the dataset is opened. No real Lance dataset is required.
    */
   @Test

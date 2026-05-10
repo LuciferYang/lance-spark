@@ -21,6 +21,10 @@ import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkCatalogConfig;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.LanceSparkWriteOptions;
+import org.lance.spark.internal.LanceExceptions;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 import java.util.Collections;
@@ -28,6 +32,8 @@ import java.util.List;
 import java.util.Map;
 
 public class Utils {
+
+  private static final Logger LOG = LoggerFactory.getLogger(Utils.class);
 
   public static long parseVersion(String version) {
     return Long.parseUnsignedLong(version);
@@ -133,8 +139,18 @@ public class Utils {
       if (version != null) {
         roBuilder.setVersion(version);
       }
+      Integer effectiveBlockSize = null;
+      String blockSizeSource;
       if (blockSize != null) {
         roBuilder.setBlockSize(blockSize);
+        effectiveBlockSize = blockSize;
+        blockSizeSource = "explicit";
+      } else if (LanceSparkReadOptions.isCloudPath(uri)) {
+        roBuilder.setBlockSize(LanceSparkReadOptions.CLOUD_DEFAULT_BLOCK_SIZE);
+        effectiveBlockSize = LanceSparkReadOptions.CLOUD_DEFAULT_BLOCK_SIZE;
+        blockSizeSource = "cloud-default";
+      } else {
+        blockSizeSource = "native-default";
       }
       if (indexCacheSize != null) {
         roBuilder.setIndexCacheSize(indexCacheSize);
@@ -142,6 +158,20 @@ public class Utils {
       if (metadataCacheSize != null) {
         roBuilder.setMetadataCacheSize(metadataCacheSize);
       }
+      // Redact the URI before emitting: object-store URIs routinely carry credentials in the
+      // userinfo (s3://AKIA...:SECRET@bucket) or SAS tokens / signed-URL params in the query
+      // string. This INFO line fires on every driver-side, executor-side, and catalog-side open,
+      // so an unredacted emit would leak credentials into any off-box log aggregator that ships
+      // INFO. Keep scheme + host + path — sufficient for operator diagnosis.
+      LOG.info(
+          "OpenDatasetBuilder.build: uri={} blockSize={} (source={}) version={} "
+              + "indexCacheSize={} metadataCacheSize={}",
+          LanceExceptions.redactUri(uri),
+          effectiveBlockSize,
+          blockSizeSource,
+          version,
+          indexCacheSize,
+          metadataCacheSize);
 
       if (namespace != null && tableId != null) {
         return Dataset.open()

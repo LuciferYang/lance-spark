@@ -217,7 +217,8 @@ public class LanceScanTest {
             partInfo,
             Collections.emptyMap(),
             null,
-            Collections.emptyMap());
+            Collections.emptyMap(),
+            null);
 
     // Plan partitions to set numPartitions
     scan.planInputPartitions();

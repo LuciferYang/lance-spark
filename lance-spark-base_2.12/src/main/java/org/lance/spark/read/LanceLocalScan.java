@@ -13,6 +13,8 @@
  */
 package org.lance.spark.read;
 
+import org.lance.spark.internal.LanceExceptions;
+
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.read.LocalScan;
 import org.apache.spark.sql.types.StructType;
@@ -47,11 +49,12 @@ public class LanceLocalScan implements LocalScan {
 
   @Override
   public String description() {
-    return String.format("LanceLocalScan[%s]", datasetUri);
+    return String.format("LanceLocalScan[%s]", LanceExceptions.redactUri(datasetUri));
   }
 
   @Override
   public String toString() {
-    return String.format("LanceLocalScan(uri=%s, schema=%s)", datasetUri, schema);
+    return String.format(
+        "LanceLocalScan(uri=%s, schema=%s)", LanceExceptions.redactUri(datasetUri), schema);
   }
 }

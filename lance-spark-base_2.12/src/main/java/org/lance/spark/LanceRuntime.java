@@ -15,6 +15,7 @@ package org.lance.spark;
 
 import org.lance.Session;
 import org.lance.namespace.LanceNamespace;
+import org.lance.spark.internal.LanceDatasetCache;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -235,6 +236,16 @@ public final class LanceRuntime {
       }
       CATALOG_SESSIONS.clear();
     }
+  }
+
+  /**
+   * Clears the JVM-local Lance Dataset cache. Primarily for testing purposes — closes all held
+   * datasets and resets metrics.
+   *
+   * <p>WARNING: Do not call while scanners may still hold references.
+   */
+  static void clearDatasetCache() {
+    LanceDatasetCache.clear();
   }
 
   /**

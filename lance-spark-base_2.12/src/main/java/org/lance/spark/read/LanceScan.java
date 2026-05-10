@@ -13,10 +13,16 @@
  */
 package org.lance.spark.read;
 
+import org.lance.Dataset;
 import org.lance.index.scalar.ZoneStats;
 import org.lance.ipc.ColumnOrdering;
+import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
+import org.lance.spark.internal.LanceDatasetCache;
+import org.lance.spark.internal.LanceExceptions;
+import org.lance.spark.internal.LanceFragmentScanner;
 import org.lance.spark.utils.Optional;
+import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.util.Preconditions;
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -108,6 +114,16 @@ public class LanceScan
 
   private final java.util.Map<String, String> namespaceProperties;
 
+  /**
+   * Pre-computed scan plan (splits + resolved version + per-fragment row counts) harvested by
+   * {@link LanceScanBuilder#build()} from the pushdown-phase Dataset handle. Marked {@code
+   * transient} because it is driver-only: {@link #planInputPartitions()} is invoked on the driver,
+   * so after Spark ships the Scan to executors this field is null — but executors never call {@code
+   * planInputPartitions()}. A null value on the driver (e.g. a future caller constructing LanceScan
+   * directly) triggers the legacy open-and-plan fallback.
+   */
+  private final transient LanceSplit.ScanPlanResult preplannedResult;
+
   public LanceScan(
       StructType schema,
       LanceSparkReadOptions readOptions,
@@ -123,7 +139,8 @@ public class LanceScan
       ZonemapFragmentPruner.PartitionInfo partitionInfo,
       java.util.Map<String, String> initialStorageOptions,
       String namespaceImpl,
-      java.util.Map<String, String> namespaceProperties) {
+      java.util.Map<String, String> namespaceProperties,
+      LanceSplit.ScanPlanResult preplannedResult) {
     this.schema = schema;
     this.readOptions = readOptions;
     this.whereConditions = whereConditions;
@@ -140,6 +157,7 @@ public class LanceScan
     this.initialStorageOptions = initialStorageOptions;
     this.namespaceImpl = namespaceImpl;
     this.namespaceProperties = namespaceProperties;
+    this.preplannedResult = preplannedResult;
   }
 
   @Override
@@ -149,7 +167,8 @@ public class LanceScan
 
   @Override
   public InputPartition[] planInputPartitions() {
-    LanceSplit.ScanPlanResult planResult = LanceSplit.planScan(readOptions);
+    LanceSplit.ScanPlanResult planResult =
+        (preplannedResult != null) ? preplannedResult : planFallback();
     List<LanceSplit> prunedSplits = pruneByRowAddrFilters(planResult.getSplits());
 
     // Zonemap-based fragment pruning: uses per-column min/max/null_count
@@ -166,9 +185,22 @@ public class LanceScan
     // Capture as effectively final for use in lambda
     final List<LanceSplit> finalSplits = prunedSplits;
 
-    // Use resolved version for snapshot isolation - ensures all workers read the same version
+    // Use resolved version for snapshot isolation - ensures all workers read the same version.
+    // Math.toIntExact fails loudly on overflow; consistent with the narrowing in
+    // LanceScanBuilder.getOrOpenDataset() so both planning paths agree on range behavior.
+    //
+    // Fast-path: when the driver already pinned the exact same version (Option B path via
+    // LanceScanBuilder.getOrOpenDataset) we skip `withVersion` to keep the original
+    // LanceSparkReadOptions *object identity*. That guarantees the executor-side
+    // LanceFragmentScanner.buildCacheKey(...) produces a cache key that is byte-identical to
+    // the driver's insert — any map-copy performed by withVersion could subtly perturb
+    // iteration order / identity of the storageOptions map and miss the warm cache entry.
+    long resolvedVersion = planResult.getResolvedVersion();
+    Integer currentPinned = readOptions.getVersion();
     LanceSparkReadOptions resolvedReadOptions =
-        readOptions.withVersion((int) planResult.getResolvedVersion());
+        (currentPinned != null && currentPinned.longValue() == resolvedVersion)
+            ? readOptions
+            : readOptions.withVersion(Math.toIntExact(resolvedVersion));
 
     InputPartition[] result =
         IntStream.range(0, finalSplits.size())
@@ -200,6 +232,90 @@ public class LanceScan
 
     this.numPartitions = result.length;
     return result;
+  }
+
+  /**
+   * Legacy/direct-construction fallback used when {@link LanceScanBuilder#build()} did not supply a
+   * {@link LanceSplit.ScanPlanResult} via the constructor (e.g. tests that instantiate {@link
+   * LanceScan} directly, or future callers outside the standard pushdown pipeline).
+   *
+   * <p>The version is resolved cheaply ahead of planScan so the fallback is symmetric with {@link
+   * LanceScanBuilder#getOrOpenDataset()} — both paths pin a specific version before opening the
+   * Dataset. That keeps the "driver plans, executors hit cache by pinned version" invariant intact
+   * even when an external driver pass has already seeded {@link
+   * org.lance.spark.internal.LanceDatasetCache} with a specific version.
+   */
+  private LanceSplit.ScanPlanResult planFallback() {
+    LanceSparkReadOptions pinned = readOptions;
+    if (pinned.getVersion() == null) {
+      java.util.Map<String, String> base =
+          readOptions.getStorageOptions() != null
+              ? readOptions.getStorageOptions()
+              : Collections.emptyMap();
+      java.util.Map<String, String> merged =
+          LanceRuntime.mergeStorageOptions(base, initialStorageOptions);
+      long resolved;
+      try {
+        resolved = Dataset.latestVersionId(readOptions.getDatasetUri(), merged);
+      } catch (RuntimeException ex) {
+        // Upstream Lance (JNI) errors embed the raw URI — including userinfo / SAS tokens /
+        // signed-URL query params — into the exception message. Preserving `ex` as cause would
+        // leak those credentials through `Throwable.printStackTrace`, Spark UI's "Full stacktrace",
+        // and SLF4J `{}`-with-throwable formatting. Drop the cause; only retain the underlying
+        // exception's class name for diagnosis.
+        throw LanceExceptions.wrap("resolve latest Lance dataset version", ex);
+      }
+      try {
+        pinned = readOptions.withVersion(Math.toIntExact(resolved));
+      } catch (ArithmeticException ex) {
+        // Do not include the URI in the exception message. ArithmeticException from
+        // Math.toIntExact does NOT embed the URI, so preserving it as cause is safe.
+        throw new IllegalStateException(
+            "Lance dataset version "
+                + resolved
+                + " exceeds int range; cannot pin for snapshot isolation",
+            ex);
+      }
+    }
+    // When dataset_cache_enabled=true, route the fallback open through LanceDatasetCache so the
+    // entry is warm for subsequent executor checkouts on the same JVM (same invariant as
+    // LanceScanBuilder.getOrOpenDataset). Outside the cache path, just forward
+    // initialStorageOptions so vended credentials from namespace.describeTable() flow through —
+    // namespace-managed tables (HMS, REST catalog, LanceDB cloud) need the STS token the base
+    // storage options don't carry.
+    if (pinned.isDatasetCacheEnabled()) {
+      LanceDatasetCache.CacheKey key =
+          LanceFragmentScanner.buildCacheKey(pinned, initialStorageOptions);
+      final LanceSparkReadOptions opts = pinned;
+      final java.util.Map<String, String> initial = initialStorageOptions;
+      // Wrap both the checkout() open AND the subsequent planScan() in a URI-redacting try/catch.
+      // Upstream object-store errors (403/404/429 on manifest HEAD, parse errors, region
+      // mismatches)
+      // embed the raw URI — including userinfo / SAS tokens / signed-URL query params — into the
+      // exception message. Preserving `ex` as cause would leak those credentials through
+      // Throwable.printStackTrace, Spark UI "Full stacktrace", and SLF4J `{}`-with-throwable
+      // formatting. Drop the cause; only retain the underlying exception's class name.
+      Dataset dataset;
+      try {
+        dataset =
+            LanceDatasetCache.checkout(
+                key, () -> Utils.openDatasetBuilder(opts).initialStorageOptions(initial).build());
+      } catch (RuntimeException ex) {
+        throw LanceExceptions.wrap("open Lance dataset", ex);
+      }
+      try {
+        return LanceSplit.planScan(dataset);
+      } catch (RuntimeException ex) {
+        throw LanceExceptions.wrap("plan Lance scan", ex);
+      } finally {
+        LanceDatasetCache.release(key);
+      }
+    }
+    try {
+      return LanceSplit.planScan(pinned, initialStorageOptions);
+    } catch (RuntimeException ex) {
+      throw LanceExceptions.wrap("plan Lance scan", ex);
+    }
   }
 
   /**

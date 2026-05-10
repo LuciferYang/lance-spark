@@ -24,7 +24,7 @@ public class CloseableUtil {
       try {
         closeable.close();
       } catch (Exception e) {
-        LOG.warn("Error while closing closeable resource", e);
+        LOG.warn("Error closing resource (underlying={})", e.getClass().getName());
       }
     }
   }

@@ -108,6 +108,8 @@
 
         <junit.version>5.10.1</junit.version>
         <scalatest.version>3.2.10</scalatest.version>
+        <mockito.version>5.10.0</mockito.version>
+        <assertj.version>3.25.3</assertj.version>
 
         <scala-maven-plugin.version>4.9.10</scala-maven-plugin.version>
         <maven-dependency-plugin.version>3.6.1</maven-dependency-plugin.version>
@@ -228,6 +230,24 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>${assertj.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>

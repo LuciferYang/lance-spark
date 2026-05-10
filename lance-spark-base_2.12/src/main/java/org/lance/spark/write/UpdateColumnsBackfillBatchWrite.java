@@ -22,6 +22,7 @@ import org.lance.fragment.FragmentUpdateResult;
 import org.lance.operation.Update;
 import org.lance.spark.LanceDataset;
 import org.lance.spark.LanceSparkWriteOptions;
+import org.lance.spark.internal.LanceExceptions;
 import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.c.ArrowArrayStream;
@@ -260,7 +261,9 @@ public class UpdateColumnsBackfillBatchWrite implements BatchWrite {
 
   @Override
   public String toString() {
-    return String.format("UpdateColumnsWriterFactory(datasetUri=%s)", writeOptions.getDatasetUri());
+    return String.format(
+        "UpdateColumnsWriterFactory(datasetUri=%s)",
+        LanceExceptions.redactUri(writeOptions.getDatasetUri()));
   }
 
   public static class TaskCommit implements WriterCommitMessage {

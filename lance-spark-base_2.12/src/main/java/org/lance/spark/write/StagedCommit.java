@@ -178,9 +178,10 @@ public class StagedCommit {
         namespace.deregisterTable(req);
       } catch (Exception e) {
         LOG.warn(
-            "Failed to deregister table {} during abort. Manual cleanup may be required.",
+            "Failed to deregister table {} during abort. Manual cleanup may be required "
+                + "(underlying={})",
             tableId,
-            e);
+            e.getClass().getName());
       }
     }
   }

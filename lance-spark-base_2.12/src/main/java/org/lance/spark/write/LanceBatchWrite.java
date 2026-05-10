@@ -23,6 +23,7 @@ import org.lance.operation.Operation;
 import org.lance.operation.Overwrite;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkWriteOptions;
+import org.lance.spark.internal.LanceExceptions;
 import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.vector.types.pojo.Schema;
@@ -212,7 +213,8 @@ public class LanceBatchWrite implements BatchWrite {
 
   @Override
   public String toString() {
-    return String.format("LanceBatchWrite(datasetUri=%s)", writeOptions.getDatasetUri());
+    return String.format(
+        "LanceBatchWrite(datasetUri=%s)", LanceExceptions.redactUri(writeOptions.getDatasetUri()));
   }
 
   public static class TaskCommit implements WriterCommitMessage {

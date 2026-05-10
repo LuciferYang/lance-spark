@@ -61,6 +61,16 @@
             <artifactId>lance-spark-bundle-3.5_${scala.compat.version}</artifactId>
             <version>${lance.spark.version}</version>
         </dependency>
+
+        <!-- Hadoop AWS for S3A filesystem (MinIO latency simulation).
+             Version must match the hadoop-client used by Spark 3.5.5 (3.3.4) — newer
+             hadoop-aws jars reference classes (e.g. PrefetchingStatistics) missing in
+             the older hadoop-common shipped with Spark. -->
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-aws</artifactId>
+            <version>3.3.4</version>
+        </dependency>
     </dependencies>
 
     <build>

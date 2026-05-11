@@ -57,6 +57,7 @@ public class LanceSparkReadOptions implements Serializable {
   public static final String CONFIG_METADATA_CACHE_SIZE = "metadata_cache_size";
   public static final String CONFIG_BATCH_SIZE = "batch_size";
   public static final String CONFIG_BATCH_READAHEAD = "batch_readahead";
+  public static final String CONFIG_BATCH_PREFETCH_QUEUE_DEPTH = "batch_prefetch_queue_depth";
   public static final String CONFIG_TOP_N_PUSH_DOWN = "topN_push_down";
 
   public static final String CONFIG_NEAREST = "nearest";
@@ -124,6 +125,27 @@ public class LanceSparkReadOptions implements Serializable {
   // Changed from 512 to 8192 for better OLAP scan performance (33x improvement)
   private static final int DEFAULT_BATCH_SIZE = 8192;
   private static final int DEFAULT_BATCH_READAHEAD = 16;
+
+  /**
+   * Default queue depth for the JVM-side async batch prefetch pipeline in {@code
+   * LanceFragmentScanner.getArrowReader()}. {@code 0} disables the prefetch wrapper entirely (the
+   * synchronous Arrow reader from Lance is used as-is), preserving historical behavior. Set to
+   * {@code >=1} to enable a background thread that overlaps Lance JNI {@code loadNextBatch()} +
+   * buffer-transfer with Spark batch consumption.
+   */
+  private static final int DEFAULT_BATCH_PREFETCH_QUEUE_DEPTH = 0;
+
+  /**
+   * Upper bound accepted for {@code batch_prefetch_queue_depth}. The JVM wrapper only needs to stay
+   * one batch ahead of Spark consumption; values beyond a few dozen add memory pressure without
+   * improving latency hiding. The hard cap at 128 exists to reject absurd configurations (e.g.
+   * {@link Integer#MAX_VALUE}) that would OOME every task when {@link
+   * java.util.concurrent.ArrayBlockingQueue} allocates its backing array. Tune the practical value
+   * per workload via {@code batch_prefetch_queue_depth} itself; this constant is a safety rail, not
+   * a recommendation.
+   */
+  public static final int MAX_BATCH_PREFETCH_QUEUE_DEPTH = 128;
+
   private static final boolean DEFAULT_TOP_N_PUSH_DOWN = true;
   private static final boolean DEFAULT_EXECUTOR_CREDENTIAL_REFRESH = true;
   private static final boolean DEFAULT_DATASET_CACHE_ENABLED = true;
@@ -138,6 +160,7 @@ public class LanceSparkReadOptions implements Serializable {
   private final Integer metadataCacheSize;
   private final int batchSize;
   private final int batchReadahead;
+  private final int batchPrefetchQueueDepth;
   private transient Query nearest;
   private final boolean topNPushDown;
   private final Map<String, String> storageOptions;
@@ -175,6 +198,7 @@ public class LanceSparkReadOptions implements Serializable {
     this.metadataCacheSize = builder.metadataCacheSize;
     this.batchSize = builder.batchSize;
     this.batchReadahead = builder.batchReadahead;
+    this.batchPrefetchQueueDepth = builder.batchPrefetchQueueDepth;
     this.nearest = builder.nearest;
     this.topNPushDown = builder.topNPushDown;
     this.storageOptions = new HashMap<>(builder.storageOptions);
@@ -293,6 +317,17 @@ public class LanceSparkReadOptions implements Serializable {
     return batchReadahead;
   }
 
+  /**
+   * Returns the configured queue depth for the JVM-side async batch prefetch pipeline. A value of
+   * {@code 0} (default) disables prefetch and the Arrow reader from Lance is returned directly. A
+   * positive value enables a background thread in {@code LanceFragmentScanner.getArrowReader()}
+   * that overlaps Lance JNI {@code loadNextBatch()} + buffer-transfer with Spark batch consumption,
+   * at the cost of one extra in-flight batch per executor task.
+   */
+  public int getBatchPrefetchQueueDepth() {
+    return batchPrefetchQueueDepth;
+  }
+
   public Query getNearest() {
     return nearest;
   }
@@ -378,6 +413,7 @@ public class LanceSparkReadOptions implements Serializable {
         .metadataCacheSize(this.metadataCacheSize)
         .batchSize(this.batchSize)
         .batchReadahead(this.batchReadahead)
+        .batchPrefetchQueueDepth(this.batchPrefetchQueueDepth)
         .nearest(this.nearest)
         .topNPushDown(this.topNPushDown)
         .storageOptions(this.storageOptions)
@@ -407,6 +443,7 @@ public class LanceSparkReadOptions implements Serializable {
         .metadataCacheSize(this.metadataCacheSize)
         .batchSize(this.batchSize)
         .batchReadahead(this.batchReadahead)
+        .batchPrefetchQueueDepth(this.batchPrefetchQueueDepth)
         .nearest(this.nearest)
         .topNPushDown(this.topNPushDown)
         .storageOptions(this.storageOptions)
@@ -489,6 +526,7 @@ public class LanceSparkReadOptions implements Serializable {
     return pushDownFilters == that.pushDownFilters
         && batchSize == that.batchSize
         && batchReadahead == that.batchReadahead
+        && batchPrefetchQueueDepth == that.batchPrefetchQueueDepth
         && topNPushDown == that.topNPushDown
         && executorCredentialRefresh == that.executorCredentialRefresh
         && datasetCacheEnabled == that.datasetCacheEnabled
@@ -513,6 +551,7 @@ public class LanceSparkReadOptions implements Serializable {
         metadataCacheSize,
         batchSize,
         batchReadahead,
+        batchPrefetchQueueDepth,
         nearest,
         topNPushDown,
         storageOptions,
@@ -532,6 +571,7 @@ public class LanceSparkReadOptions implements Serializable {
     private Integer metadataCacheSize;
     private int batchSize = DEFAULT_BATCH_SIZE;
     private int batchReadahead = DEFAULT_BATCH_READAHEAD;
+    private int batchPrefetchQueueDepth = DEFAULT_BATCH_PREFETCH_QUEUE_DEPTH;
     private boolean topNPushDown = DEFAULT_TOP_N_PUSH_DOWN;
     private Map<String, String> storageOptions = new HashMap<>();
     private LanceNamespace namespace;
@@ -593,6 +633,20 @@ public class LanceSparkReadOptions implements Serializable {
 
     public Builder batchReadahead(int batchReadahead) {
       this.batchReadahead = batchReadahead;
+      return this;
+    }
+
+    public Builder batchPrefetchQueueDepth(int batchPrefetchQueueDepth) {
+      // Symmetric with the parser's bound check in parseTypedFlags so the programmatic
+      // builder path cannot bypass MAX_BATCH_PREFETCH_QUEUE_DEPTH. Without this guard,
+      // callers could construct an options instance with a pathological value that later
+      // fails inside LanceFragmentScanner.getArrowReader when ArrayBlockingQueue allocates
+      // a multi-GiB backing array on every task.
+      Preconditions.checkArgument(
+          batchPrefetchQueueDepth >= 0 && batchPrefetchQueueDepth <= MAX_BATCH_PREFETCH_QUEUE_DEPTH,
+          "batch_prefetch_queue_depth must be in [0, %s]",
+          MAX_BATCH_PREFETCH_QUEUE_DEPTH);
+      this.batchPrefetchQueueDepth = batchPrefetchQueueDepth;
       return this;
     }
 
@@ -691,6 +745,19 @@ public class LanceSparkReadOptions implements Serializable {
         int parsedReadahead = Integer.parseInt(opts.get(CONFIG_BATCH_READAHEAD));
         Preconditions.checkArgument(parsedReadahead > 0, "batch_readahead must be positive");
         this.batchReadahead = parsedReadahead;
+      }
+      if (opts.containsKey(CONFIG_BATCH_PREFETCH_QUEUE_DEPTH)) {
+        int parsedQueueDepth = Integer.parseInt(opts.get(CONFIG_BATCH_PREFETCH_QUEUE_DEPTH));
+        // Upper bound guards against absurd values (e.g. Integer.MAX_VALUE) that would fail
+        // every task identically when ArrayBlockingQueue(queueDepth) tries to allocate a
+        // multi-GiB backing array. 1024 is already well above any meaningful prefetch depth
+        // (Lance Rust's batch_readahead default is ~#CPU; the JVM wrapper only needs to stay
+        // one batch ahead of Spark consumption in steady state).
+        Preconditions.checkArgument(
+            parsedQueueDepth >= 0 && parsedQueueDepth <= MAX_BATCH_PREFETCH_QUEUE_DEPTH,
+            "batch_prefetch_queue_depth must be in [0, %s]",
+            MAX_BATCH_PREFETCH_QUEUE_DEPTH);
+        this.batchPrefetchQueueDepth = parsedQueueDepth;
       }
       if (opts.containsKey(CONFIG_TOP_N_PUSH_DOWN)) {
         this.topNPushDown = Boolean.parseBoolean(opts.get(CONFIG_TOP_N_PUSH_DOWN));

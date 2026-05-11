@@ -69,6 +69,16 @@ public class MinioDataSetup {
         .config("spark.hadoop.fs.s3a.secret.key", SECRET_KEY)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        // Lance V2 write path reads storage options from the catalog namespace, not
+        // df.write().option(...) — without this the Rust side fails with CredentialsNotLoaded.
+        .config("spark.sql.catalog.lance_default",
+            "org.lance.spark.LanceNamespaceSparkCatalog")
+        .config("spark.sql.catalog.lance_default.aws_access_key_id", ACCESS_KEY)
+        .config("spark.sql.catalog.lance_default.aws_secret_access_key", SECRET_KEY)
+        .config("spark.sql.catalog.lance_default.aws_endpoint", MINIO_ENDPOINT)
+        .config("spark.sql.catalog.lance_default.aws_region", "us-east-1")
+        .config("spark.sql.catalog.lance_default.aws_virtual_hosted_style_request", "false")
+        .config("spark.sql.catalog.lance_default.allow_http", "true")
         .getOrCreate();
 
     System.out.println("Generating " + NUM_ROWS + " rows...");

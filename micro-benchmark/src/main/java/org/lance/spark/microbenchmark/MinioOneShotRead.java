@@ -40,8 +40,12 @@ public class MinioOneShotRead {
   private static final String PROXY_ENDPOINT = "http://localhost:19000";
   private static final String ACCESS_KEY = "minioadmin";
   private static final String SECRET_KEY = "minioadmin";
-  private static final String LANCE_URI = "s3://benchmark/numeric.lance";
-  private static final String PARQUET_URI = "s3a://benchmark/numeric.parquet";
+  // dsrb/topn_data.{lance,parquet} are seeded by MinioBenchmarkDataSetup (20M rows, cols:
+  // id LONG + score DOUBLE + name STRING). This is the dataset closest to the original
+  // lance-gap-analysis.md setup (also 3-col, ~350MB Lance), so sum(id) here exercises
+  // the same column-prune path that produced the 3198ms Lance / 1897ms Parquet gap.
+  private static final String LANCE_URI = "s3://benchmark/dsrb/topn_data.lance";
+  private static final String PARQUET_URI = "s3a://benchmark/dsrb/topn_data.parquet";
 
   public static void main(String[] args) throws Exception {
     String format = args.length >= 1 ? args[0] : "lance";
@@ -49,11 +53,15 @@ public class MinioOneShotRead {
     String mode = args.length >= 3 ? args[2] : "direct";
     String cacheEnabled = args.length >= 4 ? args[3] : "true";
     String profileEvent = args.length >= 5 ? args[4] : "off";
+    String queueDepth = args.length >= 6 ? args[5] : "0";
     String endpoint = "proxy".equals(mode) ? PROXY_ENDPOINT : DIRECT_ENDPOINT;
 
     String sql;
     if ("fullscan".equals(query)) {
-      sql = "SELECT sum(id), sum(value) FROM benchTable";
+      // topn_data has id LONG + score DOUBLE + name STRING — all three decode per batch.
+      // The string column makes the per-batch JVM work heavier, which is where async
+      // prefetch can overlap decode with I/O of the next batch.
+      sql = "SELECT sum(id), sum(score), count(name) FROM benchTable";
     } else if ("prune".equals(query)) {
       sql = "SELECT sum(id) FROM benchTable";
     } else {
@@ -87,13 +95,15 @@ public class MinioOneShotRead {
         .getOrCreate();
 
     System.out.println("=== MinioOneShotRead format=" + format + " query=" + query
-        + " mode=" + mode + " cache=" + cacheEnabled + " endpoint=" + endpoint + " ===");
+        + " mode=" + mode + " cache=" + cacheEnabled + " queueDepth=" + queueDepth
+        + " endpoint=" + endpoint + " ===");
 
     Dataset<Row> table = "lance".equals(format)
         ? spark.read()
             .format("lance")
             .option("block_size", "1048576")
             .option("batch_readahead", "16")
+            .option("batch_prefetch_queue_depth", queueDepth)
             .option("dataset_cache_enabled", cacheEnabled)
             .option("aws_access_key_id", ACCESS_KEY)
             .option("aws_secret_access_key", SECRET_KEY)

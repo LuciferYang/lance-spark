@@ -686,9 +686,7 @@ public abstract class BaseAddIndexTest {
                 "alter table %s create index idx_zm_repeat using zonemap (id)", fullTable));
     long fragmentsIndexed2 = result2.collectAsList().get(0).getLong(0);
     Assertions.assertEquals(
-        fragmentsIndexed1,
-        fragmentsIndexed2,
-        "Second run must index the same number of fragments");
+        fragmentsIndexed1, fragmentsIndexed2, "Second run must index the same number of fragments");
 
     List<Index> segmentsAfterSecond = indexesByName("idx_zm_repeat");
     Assertions.assertEquals(
@@ -791,7 +789,8 @@ public abstract class BaseAddIndexTest {
     Assertions.assertTrue(
         expectedFragments.size() >= 2,
         "Fixture must produce >= 2 fragments to exercise multi-segment commit invariants; "
-            + "got " + expectedFragments.size());
+            + "got "
+            + expectedFragments.size());
 
     // Each segment must cover exactly one fragment, that fragment must belong to the
     // ground-truth set, and no two segments may claim the same fragment.
@@ -955,12 +954,9 @@ public abstract class BaseAddIndexTest {
         .coalesce(1)
         .writeTo(fullTable)
         .append();
+    spark.sql(String.format("alter table %s create index idx_zm_id using zonemap (id)", fullTable));
     spark.sql(
-        String.format(
-            "alter table %s create index idx_zm_id using zonemap (id)", fullTable));
-    spark.sql(
-        String.format(
-            "alter table %s create index idx_zm_text using zonemap (text)", fullTable));
+        String.format("alter table %s create index idx_zm_text using zonemap (text)", fullTable));
 
     List<Index> idSegments = indexesByName("idx_zm_id");
     List<Index> textSegments = indexesByName("idx_zm_text");
@@ -989,7 +985,8 @@ public abstract class BaseAddIndexTest {
       for (ZoneStats z : idStats) {
         Assertions.assertTrue(
             z.getMin() instanceof Number,
-            "id zone min must be Number; got " + (z.getMin() == null ? "null" : z.getMin().getClass()));
+            "id zone min must be Number; got "
+                + (z.getMin() == null ? "null" : z.getMin().getClass()));
       }
       for (ZoneStats z : textStats) {
         Assertions.assertTrue(
@@ -1113,6 +1110,747 @@ public abstract class BaseAddIndexTest {
         1,
         segment.fragments().orElseThrow().size(),
         "The single segment must cover exactly one fragment");
+  }
+
+  @Test
+  public void testZonemapConsolidatedCommitShape() {
+    // With spark.lance.zonemap.consolidate.enabled=true the build path must produce ONE
+    // consolidated
+    // IndexMetadata segment covering the full fragment set, instead of one segment per
+    // fragment. This is the consumer-side integration of lance-core's
+    // computeZonemapBatch + writeZonemapIndexFromBatches APIs (added in 7.0.0-beta.7):
+    // executors return per-fragment Arrow batches, the driver merges them into a single
+    // <uuid>/zonemap.lance file under one IndexMetadata entry.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    prepareDataset();
+
+    Dataset<Row> result =
+        spark.sql(
+            String.format(
+                "alter table %s create index idx_zm_consolidated using zonemap (id)", fullTable));
+    long fragmentsIndexed = result.collectAsList().get(0).getLong(0);
+
+    Set<Integer> expectedFragments = new HashSet<>();
+    try (org.lance.Dataset lds = openLance()) {
+      for (org.lance.Fragment f : lds.getFragments()) {
+        expectedFragments.add(f.getId());
+      }
+    }
+    Assertions.assertEquals(
+        expectedFragments.size(),
+        (int) fragmentsIndexed,
+        "fragmentsIndexed return value must match the dataset's current fragment count");
+    // Without >=2 fragments the "single segment vs N segments" shape is indistinguishable
+    // from the distributed path's N=1 degenerate case.
+    Assertions.assertTrue(
+        expectedFragments.size() >= 2,
+        "Fixture must produce >= 2 fragments to verify consolidation; got "
+            + expectedFragments.size());
+
+    List<Index> segments = indexesByName("idx_zm_consolidated");
+    Assertions.assertEquals(
+        1,
+        segments.size(),
+        "Consolidated path must commit exactly ONE IndexMetadata segment regardless of "
+            + "fragment count; got "
+            + segments.size());
+
+    Index segment = segments.get(0);
+    Assertions.assertEquals(IndexType.ZONEMAP, segment.indexType());
+    Assertions.assertTrue(
+        segment.fragments().isPresent(), "Consolidated segment must carry a fragment list");
+    Set<Integer> segmentFragments = new HashSet<>(segment.fragments().get());
+    Assertions.assertEquals(
+        expectedFragments,
+        segmentFragments,
+        "Consolidated segment's fragment list must equal the dataset's fragment set");
+    Assertions.assertEquals(
+        1,
+        segment.fields().size(),
+        "Indexing one column ('id') must produce a field-id list of length 1; got "
+            + segment.fields());
+
+    // The consolidated zonemap.lance must be readable end-to-end: every indexed fragment must
+    // appear in getZonemapStats. A regression that wrote an empty or partial batch list
+    // would still satisfy the IndexMetadata shape but fail this read-back coverage check.
+    Set<Integer> coveredFragments =
+        zonemapStats(ID_COLUMN).stream().map(ZoneStats::getFragmentId).collect(Collectors.toSet());
+    Assertions.assertEquals(
+        expectedFragments,
+        coveredFragments,
+        "getZonemapStats(id) must cover every indexed fragment from the consolidated segment");
+
+    // Pin datasetVersion / indexVersion wire-through. A regression that defaulted these to 0
+    // on the consolidated Index.builder (e.g. .datasetVersion(0L) instead of capturing the
+    // live version, or .indexVersion(0) instead of writtenIndex.indexVersion()) passes every
+    // other consolidated test because no other assertion touches these fields. The distributed
+    // test only asserts cross-segment uniformity, which is vacuous on 1 segment.
+    long postCommitVersion;
+    try (org.lance.Dataset lds = openLance()) {
+      postCommitVersion = lds.version();
+    }
+    Assertions.assertTrue(
+        segment.datasetVersion() > 0L,
+        "Consolidated segment must record a non-zero datasetVersion; got "
+            + segment.datasetVersion());
+    Assertions.assertTrue(
+        segment.datasetVersion() <= postCommitVersion,
+        "Consolidated segment's datasetVersion ("
+            + segment.datasetVersion()
+            + ") must not exceed the live dataset version ("
+            + postCommitVersion
+            + ") — recorded version came from the wrong manifest");
+  }
+
+  @Test
+  public void testZonemapConsolidatedRepeatedCreate() {
+    // Replace-semantics for the consolidated path: re-running CREATE INDEX under the same name
+    // must mark the previous segment removed in `withRemovedIndices` and commit a fresh single
+    // segment. A regression that dropped the removedIndices wiring would leave the first run's
+    // IndexMetadata entry behind alongside the new one, doubling the manifest footprint.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    prepareDataset();
+
+    spark
+        .sql(
+            String.format(
+                "alter table %s create index idx_zm_consolidated_repeat using zonemap (id)",
+                fullTable))
+        .collect();
+    List<Index> firstRun = indexesByName("idx_zm_consolidated_repeat");
+    Assertions.assertEquals(1, firstRun.size(), "First run must commit one segment");
+    UUID firstUuid = firstRun.get(0).uuid();
+
+    spark
+        .sql(
+            String.format(
+                "alter table %s create index idx_zm_consolidated_repeat using zonemap (id)",
+                fullTable))
+        .collect();
+    List<Index> secondRun = indexesByName("idx_zm_consolidated_repeat");
+    Assertions.assertEquals(
+        1,
+        secondRun.size(),
+        "Second run under the same name must replace, not append — got "
+            + secondRun.size()
+            + " segments");
+    Assertions.assertNotEquals(
+        firstUuid,
+        secondRun.get(0).uuid(),
+        "Replace must produce a fresh UUID; got the same UUID across both runs, meaning the "
+            + "consolidated write reused state from the previous run");
+
+    // Verify the FIRST run's UUID is gone from the entire manifest (not just same-name).
+    // A regression that dropped withRemovedIndices would leave the old IndexMetadata entry
+    // alongside the new one — `indexesByName` filters by name and would not catch a
+    // different-named orphan. Walking the full index list does.
+    try (org.lance.Dataset lds = openLance()) {
+      Set<UUID> liveUuids = lds.getIndexes().stream().map(Index::uuid).collect(Collectors.toSet());
+      Assertions.assertFalse(
+          liveUuids.contains(firstUuid),
+          "First-run UUID must NOT remain in the live manifest after replace; "
+              + "withRemovedIndices wiring is broken");
+    }
+
+    // Post-replace coverage: the new segment must cover the full dataset fragment set, not a
+    // truncated subset. A regression where the consolidated write trimmed fragments silently
+    // (e.g. dropped the last task's contribution) would still satisfy size==1 + fresh UUID.
+    Set<Integer> expectedFragments = new HashSet<>();
+    try (org.lance.Dataset lds = openLance()) {
+      for (org.lance.Fragment f : lds.getFragments()) {
+        expectedFragments.add(f.getId());
+      }
+    }
+    Set<Integer> segmentFragments = new HashSet<>(secondRun.get(0).fragments().orElseThrow());
+    Assertions.assertEquals(
+        expectedFragments,
+        segmentFragments,
+        "Post-replace segment must cover the dataset's full fragment set; got "
+            + segmentFragments
+            + " vs expected "
+            + expectedFragments);
+
+    // Read-back: the manifest entry's fragment list is built from the dispatcher's view,
+    // which is tautological vs. what we just asserted. The independent ground truth is what
+    // getZonemapStats actually returns — that's the read path's view of the on-disk
+    // consolidated zonemap.lance. A regression where the manifest claims coverage the file
+    // doesn't have would diverge here.
+    Set<Integer> coveredFragments =
+        zonemapStats(ID_COLUMN).stream().map(ZoneStats::getFragmentId).collect(Collectors.toSet());
+    Assertions.assertEquals(
+        expectedFragments,
+        coveredFragments,
+        "getZonemapStats coverage must match the dispatched fragment set after replace");
+  }
+
+  @Test
+  public void testZonemapConsolidatedReplacesDistributed() {
+    // Cross-path interop: a distributed-built zonemap (N segments) replaced by a consolidated
+    // build under the same index name must commit exactly one segment AND mark all N old
+    // segments as removed. A regression in `removedIndices` filtering by name would leave
+    // some-or-all of the N old segments stranded as duplicate-named entries in the manifest.
+    prepareDataset();
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "false");
+    spark.sql(
+        String.format(
+            "alter table %s create index idx_zm_crosspath using zonemap (id)", fullTable));
+    List<Index> distributedSegments = indexesByName("idx_zm_crosspath");
+    Assertions.assertTrue(
+        distributedSegments.size() >= 2,
+        "Pre-condition: distributed build must produce multiple segments (fixture-dependent)");
+
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(
+        String.format(
+            "alter table %s create index idx_zm_crosspath using zonemap (id)", fullTable));
+
+    List<Index> afterConsolidate = indexesByName("idx_zm_crosspath");
+    Assertions.assertEquals(
+        1,
+        afterConsolidate.size(),
+        "Consolidated re-create must collapse the N distributed segments to one; got "
+            + afterConsolidate.size());
+    Set<UUID> oldUuids = distributedSegments.stream().map(Index::uuid).collect(Collectors.toSet());
+    Assertions.assertFalse(
+        oldUuids.contains(afterConsolidate.get(0).uuid()),
+        "Replacement segment must have a fresh UUID, disjoint from the N distributed UUIDs");
+
+    // Post-replace coverage: the consolidated segment must cover the union of fragments the
+    // N distributed segments covered. A regression that committed a single-segment index over
+    // a strict subset (truncated parallelize result, dropped task, etc.) satisfies size==1
+    // and "fresh UUID" but breaks pruning silently.
+    Set<Integer> expectedFragments = new HashSet<>();
+    try (org.lance.Dataset lds = openLance()) {
+      for (org.lance.Fragment f : lds.getFragments()) {
+        expectedFragments.add(f.getId());
+      }
+    }
+    Set<Integer> segmentFragments =
+        new HashSet<>(afterConsolidate.get(0).fragments().orElseThrow());
+    Assertions.assertEquals(
+        expectedFragments,
+        segmentFragments,
+        "Consolidated replacement must cover every fragment the N distributed segments did");
+
+    // The full manifest must drop ALL N old UUIDs, not just same-name ones. A regression that
+    // filtered removedIndices incorrectly would leave orphans of a different name in place.
+    try (org.lance.Dataset lds = openLance()) {
+      Set<UUID> liveUuids = lds.getIndexes().stream().map(Index::uuid).collect(Collectors.toSet());
+      Assertions.assertTrue(
+          java.util.Collections.disjoint(liveUuids, oldUuids),
+          "Distributed-build UUIDs must be fully removed from the manifest after consolidated "
+              + "replace; got intersection: "
+              + (liveUuids.stream().filter(oldUuids::contains).collect(Collectors.toSet())));
+    }
+
+    // Post-replace zonemap stats must be readable and cover the full fragment set — proves the
+    // consolidated zonemap.lance is intact AND that the manifest's index→segment pointer is
+    // wired up correctly (a stale pointer from the dropped segments would fail to load).
+    Set<Integer> coveredFragments =
+        zonemapStats(ID_COLUMN).stream().map(ZoneStats::getFragmentId).collect(Collectors.toSet());
+    Assertions.assertEquals(
+        expectedFragments,
+        coveredFragments,
+        "getZonemapStats must cover every fragment post-replace");
+  }
+
+  @Test
+  public void testZonemapDistributedReplacesConsolidated() {
+    // Reverse-interop direction: consolidated → distributed. Toggling the flag back off after
+    // a consolidated build and re-creating the same name must remove the consolidated segment
+    // and commit N distributed segments. A regression where the distributed path's
+    // removedIndices filter missed the single consolidated entry (e.g. asserted N>0 entries
+    // to remove) would leave the consolidated segment orphaned in the manifest.
+    prepareDataset();
+    // Fixture pin: prepareDataset() must produce >=2 fragments for this test to assert
+    // anything meaningful about the distributed "multiple segments" shape. A future change
+    // to the fixture (e.g. Spark version consolidating INSERT VALUES tuples) would turn this
+    // test into a tautology where N=1 satisfies both the "consolidated" pre-condition and
+    // the "distributed >= 2" post-condition.
+    try (org.lance.Dataset lds = openLance()) {
+      Assertions.assertTrue(
+          lds.getFragments().size() >= 2,
+          "Fixture must produce >= 2 fragments to distinguish consolidated (1 segment) from "
+              + "distributed (N segments); got "
+              + lds.getFragments().size());
+    }
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(
+        String.format("alter table %s create index idx_zm_reverse using zonemap (id)", fullTable));
+    List<Index> consolidatedSegments = indexesByName("idx_zm_reverse");
+    Assertions.assertEquals(
+        1,
+        consolidatedSegments.size(),
+        "Pre-condition: consolidated build must produce exactly one segment");
+    UUID consolidatedUuid = consolidatedSegments.get(0).uuid();
+
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "false");
+    spark.sql(
+        String.format("alter table %s create index idx_zm_reverse using zonemap (id)", fullTable));
+
+    List<Index> afterDistributed = indexesByName("idx_zm_reverse");
+    Assertions.assertTrue(
+        afterDistributed.size() >= 2,
+        "Distributed replacement must produce multiple segments (one per fragment); got "
+            + afterDistributed.size());
+    Set<UUID> newUuids = afterDistributed.stream().map(Index::uuid).collect(Collectors.toSet());
+    Assertions.assertFalse(
+        newUuids.contains(consolidatedUuid),
+        "Consolidated segment's UUID must NOT appear in the post-replace distributed segment "
+            + "set");
+
+    try (org.lance.Dataset lds = openLance()) {
+      Set<UUID> liveUuids = lds.getIndexes().stream().map(Index::uuid).collect(Collectors.toSet());
+      Assertions.assertFalse(
+          liveUuids.contains(consolidatedUuid),
+          "Consolidated UUID must be fully removed from the manifest after distributed "
+              + "replace");
+    }
+  }
+
+  @Test
+  public void testZonemapConsolidateFlagDefaultsToDistributed() {
+    // Pin the default behavior: without setting the flag, ZONEMAP CREATE INDEX must route
+    // through the distributed path. A regression that flipped the default would silently
+    // change every existing pipeline's commit footprint, and every other consolidated test
+    // would still pass (they explicitly set the flag).
+    Assertions.assertFalse(
+        spark.conf().contains("spark.lance.zonemap.consolidate.enabled"),
+        "Sanity: this test assumes the flag is unset on entry; AfterEach teardown is wrong "
+            + "if this fails");
+    prepareDataset();
+    spark.sql(
+        String.format("alter table %s create index idx_zm_default using zonemap (id)", fullTable));
+    List<Index> segments = indexesByName("idx_zm_default");
+    int fragmentCount;
+    try (org.lance.Dataset lds = openLance()) {
+      fragmentCount = lds.getFragments().size();
+    }
+    // Tight pin (mirror the explicit-false test): distributed produces one segment per
+    // fragment. A regression where the default path produced some-but-not-N segments would
+    // pass `>= 2` silently.
+    Assertions.assertEquals(
+        fragmentCount,
+        segments.size(),
+        "Default (flag unset) must produce one segment per fragment; got "
+            + segments.size()
+            + " segments over "
+            + fragmentCount
+            + " fragments");
+  }
+
+  @Test
+  public void testZonemapConsolidateFlagFalseRoutesToDistributed() {
+    // Representative negative case: explicit "false" must produce the distributed multi-
+    // segment shape. Combined with testZonemapConsolidateFlagCaseInsensitive (positive "TRUE")
+    // and testZonemapConsolidateFlagDefaultsToDistributed (unset), this triangulates the
+    // parse semantics: only case-insensitive "true" (with trim) flips the path.
+    prepareDataset();
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "false");
+    spark.sql(
+        String.format("alter table %s create index idx_zm_false using zonemap (id)", fullTable));
+    List<Index> segments = indexesByName("idx_zm_false");
+    // Tight pin: distributed produces ONE segment per fragment. Asserting equality (not
+    // size >= 2) catches a regression where consolidated misroutes to a state that produces
+    // some-but-not-N segments (e.g. 2 segments from a 20-fragment dataset).
+    int fragmentCount;
+    try (org.lance.Dataset lds = openLance()) {
+      fragmentCount = lds.getFragments().size();
+    }
+    Assertions.assertEquals(
+        fragmentCount,
+        segments.size(),
+        "spark.lance.zonemap.consolidate.enabled=false must route to distributed (one segment per "
+            + "fragment); got "
+            + segments.size()
+            + " segments over "
+            + fragmentCount
+            + " fragments");
+  }
+
+  @Test
+  public void testZonemapConsolidateFlagCaseInsensitive() {
+    // The R1 fix switched parsing from `_.toBoolean` to `equalsIgnoreCase("true")` + trim.
+    // Pin the lenient cases that R1 added support for: mixed case, leading/trailing whitespace,
+    // and the canonical "true". A regression that reverted to strict `_.toBoolean` would fail
+    // "TRUE" and " true "; one that broke trim() would fail " true ".
+    prepareDataset();
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "  TRUE  ");
+    spark.sql(
+        String.format("alter table %s create index idx_zm_flag_ci using zonemap (id)", fullTable));
+    List<Index> segments = indexesByName("idx_zm_flag_ci");
+    Assertions.assertEquals(
+        1,
+        segments.size(),
+        "Flag value '  TRUE  ' must route to the consolidated path (1 segment); got "
+            + segments.size());
+  }
+
+  @Test
+  public void testZonemapConsolidatedOnStringColumn() throws Exception {
+    // String columns exercise the UTF-8 min/max codec end-to-end through Arrow IPC. Numeric
+    // min/max in the existing test would not catch a regression where the string codec
+    // misencodes empty validity buffers or mishandles variable-length byte payloads on the
+    // ArrowStreamWriter → ArrowStreamReader round-trip.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(String.format("create table %s (id int, text string) using lance;", fullTable));
+    spark
+        .range(0, 12)
+        .selectExpr("cast(id as int) as id", "cast(concat('s_', id) as string) as text")
+        .coalesce(1)
+        .writeTo(fullTable)
+        .append();
+    spark
+        .sql(
+            String.format(
+                "alter table %s create index idx_zm_c_text using zonemap (text)", fullTable))
+        .collect();
+    List<Index> segments = indexesByName("idx_zm_c_text");
+    Assertions.assertEquals(1, segments.size(), "Consolidated string index must be one segment");
+    // Coverage check: a regression committing 1 segment over zero fragments satisfies size==1.
+    Set<Integer> expectedFragments = new HashSet<>();
+    try (org.lance.Dataset lds = openLance()) {
+      for (org.lance.Fragment f : lds.getFragments()) {
+        expectedFragments.add(f.getId());
+      }
+    }
+    Set<Integer> segmentFragments = new HashSet<>(segments.get(0).fragments().orElseThrow());
+    Assertions.assertEquals(
+        expectedFragments,
+        segmentFragments,
+        "String consolidated segment must cover the dataset's full fragment set");
+    List<ZoneStats> stats = zonemapStats("text");
+    Assertions.assertFalse(stats.isEmpty(), "Zonemap stats for string column must be present");
+    for (ZoneStats z : stats) {
+      // Skip all-NULL zones if any; for this fixture there should be none.
+      Assertions.assertTrue(
+          z.getMin() instanceof String,
+          "text zone min must be String; got "
+              + (z.getMin() == null ? "null" : z.getMin().getClass()));
+      Assertions.assertTrue(
+          z.getMax() instanceof String,
+          "text zone max must be String; got "
+              + (z.getMax() == null ? "null" : z.getMax().getClass()));
+    }
+  }
+
+  @Test
+  public void testZonemapConsolidatedOnNullableStringColumn() throws Exception {
+    // Verifies that the Arrow IPC round-trip preserves all-NULL zone semantics for the
+    // consolidated path. A regression that mishandled empty/all-NULL validity buffers through
+    // ArrowStreamWriter would either crash or produce non-null min/max for NULL data, neither
+    // of which the testZonemapConsolidatedCommitShape numeric test would catch.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(String.format("create table %s (id int, text string) using lance;", fullTable));
+    spark
+        .range(0, 10)
+        .selectExpr(
+            "cast(id as int) as id",
+            "case when id < 5 then cast(concat('s_', id) as string) "
+                + "else cast(null as string) end as text")
+        .coalesce(1)
+        .writeTo(fullTable)
+        .append();
+    spark
+        .sql(
+            String.format(
+                "alter table %s create index idx_zm_c_null_text using zonemap (text) "
+                    + "with (rows_per_zone=5)",
+                fullTable))
+        .collect();
+    List<Index> segments = indexesByName("idx_zm_c_null_text");
+    Assertions.assertEquals(1, segments.size(), "Single consolidated segment expected");
+
+    List<ZoneStats> stats = zonemapStats("text");
+    boolean sawAllNullZone = false;
+    boolean sawNonNullZone = false;
+    for (ZoneStats z : stats) {
+      if (z.getNullCount() == z.getZoneLength()) {
+        Assertions.assertNull(z.getMin(), "All-NULL zone must have null min");
+        Assertions.assertNull(z.getMax(), "All-NULL zone must have null max");
+        sawAllNullZone = true;
+      } else if (z.getNullCount() == 0) {
+        Assertions.assertTrue(z.getMin() instanceof String, "Non-NULL zone min must be String");
+        Assertions.assertTrue(z.getMax() instanceof String, "Non-NULL zone max must be String");
+        sawNonNullZone = true;
+      } else {
+        Assertions.fail(
+            String.format(
+                "Unexpected mixed-null zone: nullCount=%d, zoneLength=%d, "
+                    + "fragmentId=%d, zoneStart=%d — fixture expects boundaries to align with "
+                    + "the 5-NULL/5-non-NULL split",
+                z.getNullCount(), z.getZoneLength(), z.getFragmentId(), z.getZoneStart()));
+      }
+    }
+    Assertions.assertTrue(sawAllNullZone, "Fixture must produce at least one all-NULL zone");
+    Assertions.assertTrue(sawNonNullZone, "Fixture must produce at least one non-NULL zone");
+  }
+
+  @Test
+  public void testZonemapConsolidatedWithRowsPerZone() throws Exception {
+    // The argsJson value the driver passes to writeZonemapIndexFromBatches MUST match what the
+    // executors pass to computeZonemapBatch — a regression that re-serialized args at the
+    // dispatcher boundary could diverge and produce a file whose recorded `rows_per_zone`
+    // differs from the actual zone layout. This test pins the threading by counting zones.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(String.format("create table %s (id int, text string) using lance;", fullTable));
+    spark
+        .range(0, 12)
+        .selectExpr("cast(id as int) as id", "cast(concat('t_', id) as string) as text")
+        .coalesce(1)
+        .writeTo(fullTable)
+        .append();
+    spark
+        .sql(
+            String.format(
+                "alter table %s create index idx_zm_c_rpz using zonemap (id) "
+                    + "with (rows_per_zone=4)",
+                fullTable))
+        .collect();
+    List<Index> segments = indexesByName("idx_zm_c_rpz");
+    Assertions.assertEquals(1, segments.size(), "Single consolidated segment expected");
+
+    try (org.lance.Dataset lds = openLance()) {
+      Assertions.assertEquals(
+          1, lds.getFragments().size(), "Fixture expects coalesce(1) to produce one fragment");
+      List<ZoneStats> stats = lds.getZonemapStats("id");
+      Assertions.assertEquals(
+          3,
+          stats.size(),
+          "rows_per_zone=4 over a 12-row fragment must produce 3 zones; got "
+              + stats.size()
+              + " — argsJson threading from driver to writeZonemapIndexFromBatches likely "
+              + "broken");
+      // Sort by zone_start so we can assert per-zone min/max correspond to the right id range.
+      // Without this, a regression that aliased one fragment's stats array across all zones
+      // (e.g. argsJson reused stale state in writeZonemapIndexFromBatches) produces 3 zones
+      // of length 4 with IDENTICAL min/max — every count/length assertion still passes.
+      List<ZoneStats> sorted =
+          stats.stream()
+              .sorted((a, b) -> Long.compare(a.getZoneStart(), b.getZoneStart()))
+              .collect(Collectors.toList());
+      for (int i = 0; i < 3; i++) {
+        ZoneStats z = sorted.get(i);
+        Assertions.assertEquals(
+            4,
+            z.getZoneLength(),
+            "Zone " + i + " must have length == rows_per_zone=4; got " + z.getZoneLength());
+        // ids in [i*4, i*4+4): zone 0 → ids {0,1,2,3} min=0 max=3, etc.
+        int expectedMin = i * 4;
+        int expectedMax = i * 4 + 3;
+        Number actualMin = (Number) z.getMin();
+        Number actualMax = (Number) z.getMax();
+        Assertions.assertEquals(
+            expectedMin,
+            actualMin.intValue(),
+            "Zone "
+                + i
+                + " (zone_start="
+                + z.getZoneStart()
+                + ") min must be "
+                + expectedMin
+                + " (the first id in ["
+                + expectedMin
+                + ","
+                + (expectedMax + 1)
+                + "));"
+                + " got "
+                + actualMin
+                + " — stale-stats aliasing across zones");
+        Assertions.assertEquals(
+            expectedMax,
+            actualMax.intValue(),
+            "Zone "
+                + i
+                + " (zone_start="
+                + z.getZoneStart()
+                + ") max must be "
+                + expectedMax
+                + "; got "
+                + actualMax);
+      }
+    }
+  }
+
+  @Test
+  public void testZonemapConsolidatedOnSingleFragmentTable() throws Exception {
+    // Degenerate N=1 case for the consolidated path. The dispatcher already guards `isEmpty`,
+    // but N=1 has no test coverage and a regression that special-cased "multiple fragments"
+    // could silently break this path.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(String.format("create table %s (id int, text string) using lance;", fullTable));
+    spark
+        .range(0, 10)
+        .selectExpr("cast(id as int) as id", "cast(concat('t_', id) as string) as text")
+        .coalesce(1)
+        .writeTo(fullTable)
+        .append();
+
+    Dataset<Row> result =
+        spark.sql(
+            String.format(
+                "alter table %s create index idx_zm_c_single using zonemap (id)", fullTable));
+    long fragmentsIndexed = result.collectAsList().get(0).getLong(0);
+    Assertions.assertEquals(1L, fragmentsIndexed, "Expected one fragment indexed for N=1 case");
+
+    List<Index> segments = indexesByName("idx_zm_c_single");
+    Assertions.assertEquals(
+        1, segments.size(), "Consolidated path on N=1 must commit exactly one segment");
+    Assertions.assertEquals(
+        1,
+        segments.get(0).fragments().orElseThrow().size(),
+        "Segment must cover exactly one fragment");
+
+    // Read-back via getZonemapStats: confirms the on-disk consolidated zonemap.lance is
+    // wired up correctly on the degenerate N=1 path. Without this, a regression that wrote
+    // an empty file but committed a structurally-valid IndexMetadata entry passes the
+    // segment-count / fragment-count assertions above silently.
+    Set<Integer> coveredFragments =
+        zonemapStats(ID_COLUMN).stream().map(ZoneStats::getFragmentId).collect(Collectors.toSet());
+    Assertions.assertEquals(
+        new HashSet<>(segments.get(0).fragments().orElseThrow()),
+        coveredFragments,
+        "getZonemapStats on N=1 consolidated must match the segment's fragment list");
+  }
+
+  @Test
+  public void testTwoCoexistingConsolidatedZonemapIndexes() throws Exception {
+    // Two differently-named consolidated indexes on different columns of the same dataset must
+    // commit with disjoint UUIDs. Each indexes a different column → writeZonemapIndexFromBatches
+    // is invoked twice with different arguments, exercising the cross-name isolation that the
+    // read path's load_indices_by_name grouping depends on.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(String.format("create table %s (id int, text string) using lance;", fullTable));
+    spark
+        .range(0, 20)
+        .selectExpr("cast(id as int) as id", "cast(concat('t_', id) as string) as text")
+        .coalesce(1)
+        .writeTo(fullTable)
+        .append();
+    spark.sql(
+        String.format("alter table %s create index idx_zm_c_id using zonemap (id)", fullTable));
+    spark.sql(
+        String.format("alter table %s create index idx_zm_c_text using zonemap (text)", fullTable));
+
+    List<Index> idSegments = indexesByName("idx_zm_c_id");
+    List<Index> textSegments = indexesByName("idx_zm_c_text");
+    Assertions.assertEquals(1, idSegments.size(), "id consolidated index must be one segment");
+    Assertions.assertEquals(1, textSegments.size(), "text consolidated index must be one segment");
+    Assertions.assertNotEquals(
+        idSegments.get(0).uuid(),
+        textSegments.get(0).uuid(),
+        "Two consolidated indexes on different columns must have disjoint UUIDs");
+
+    // Both names must survive in a single manifest snapshot taken AFTER both commits.
+    // `indexesByName` re-opens the dataset on each call; calling it twice could mask a
+    // regression where the second commit dropped the first index from the manifest, because
+    // each lookup walks the live (post-second-commit) state independently. Snapshotting once
+    // ensures we're asserting about a single consistent view of the manifest.
+    try (org.lance.Dataset lds = openLance()) {
+      Set<String> liveNames =
+          lds.getIndexes().stream().map(Index::name).collect(Collectors.toSet());
+      Assertions.assertTrue(
+          liveNames.contains("idx_zm_c_id"),
+          "id index must remain in manifest after text-index commit; live names: " + liveNames);
+      Assertions.assertTrue(
+          liveNames.contains("idx_zm_c_text"),
+          "text index must remain in manifest after both commits; live names: " + liveNames);
+    }
+
+    // Stats for both columns must be readable independently after both commits.
+    try (org.lance.Dataset lds = openLance()) {
+      List<ZoneStats> idStats = lds.getZonemapStats("id");
+      List<ZoneStats> textStats = lds.getZonemapStats("text");
+      Assertions.assertFalse(idStats.isEmpty(), "id zonemap stats must be readable");
+      Assertions.assertFalse(textStats.isEmpty(), "text zonemap stats must be readable");
+      for (ZoneStats z : idStats) {
+        Assertions.assertTrue(
+            z.getMin() instanceof Number,
+            "id zone min must be Number; got "
+                + (z.getMin() == null ? "null" : z.getMin().getClass()));
+      }
+      for (ZoneStats z : textStats) {
+        Assertions.assertTrue(
+            z.getMin() instanceof String,
+            "text zone min must be String; got "
+                + (z.getMin() == null ? "null" : z.getMin().getClass()));
+      }
+    }
+  }
+
+  @Test
+  public void testZonemapConsolidatedOnLongColumn() throws Exception {
+    // The Int32 codec path used by the other consolidated tests is NOT representative of
+    // the production target — at sf=100 store_sales the indexed column is `ss_sold_date_sk`,
+    // a BIGINT. Int and Long round-trip through different Arrow IPC paths
+    // (IntVector vs BigIntVector); a regression that mishandled BigIntVector through
+    // ArrowStreamWriter/Reader (e.g. byte-order or buffer-length) would not be caught by the
+    // Int-column tests.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    spark.sql(String.format("create table %s (id bigint, text string) using lance;", fullTable));
+    spark
+        .range(0L, 12L)
+        .selectExpr("id as id", "cast(concat('t_', id) as string) as text")
+        .coalesce(1)
+        .writeTo(fullTable)
+        .append();
+
+    spark
+        .sql(
+            String.format(
+                "alter table %s create index idx_zm_c_long using zonemap (id)", fullTable))
+        .collect();
+    List<Index> segments = indexesByName("idx_zm_c_long");
+    Assertions.assertEquals(1, segments.size(), "Consolidated bigint index must be one segment");
+    // Coverage check: a regression that committed 1 segment over zero fragments would still
+    // satisfy size==1. Verify the segment's fragments() set matches the dataset's.
+    Set<Integer> expectedFragments = new HashSet<>();
+    try (org.lance.Dataset lds = openLance()) {
+      for (org.lance.Fragment f : lds.getFragments()) {
+        expectedFragments.add(f.getId());
+      }
+    }
+    Set<Integer> segmentFragments = new HashSet<>(segments.get(0).fragments().orElseThrow());
+    Assertions.assertEquals(
+        expectedFragments,
+        segmentFragments,
+        "Bigint consolidated segment must cover the dataset's full fragment set");
+
+    List<ZoneStats> stats = zonemapStats(ID_COLUMN);
+    Assertions.assertFalse(stats.isEmpty(), "Zonemap stats for bigint column must be present");
+    for (ZoneStats z : stats) {
+      Assertions.assertTrue(
+          z.getMin() instanceof Number,
+          "bigint zone min must be Number; got "
+              + (z.getMin() == null ? "null" : z.getMin().getClass()));
+      long min = ((Number) z.getMin()).longValue();
+      long max = ((Number) z.getMax()).longValue();
+      Assertions.assertTrue(
+          min >= 0L && max <= 11L,
+          "bigint zone min/max must be inside the [0, 11] id range; got [" + min + "," + max + "]");
+    }
+  }
+
+  @Test
+  public void testZonemapConsolidatedIndexIsQueryable() {
+    // End-to-end read-back: confirm a SELECT against the indexed column returns correct rows
+    // after a consolidated CREATE INDEX. Manifest entry + zonemap stats round-trip prove the
+    // index is structurally sound, but not that it's actually USABLE by the read path's
+    // pruning/scan logic. A regression that left the manifest-to-file pointer wrong (or the
+    // file in an unreadable state post-write) would pass every other consolidated test but
+    // break query execution. Mirrors testCreateIndexDistributed's read-back check.
+    spark.conf().set("spark.lance.zonemap.consolidate.enabled", "true");
+    prepareDataset();
+    spark.sql(
+        String.format(
+            "alter table %s create index idx_zm_c_queryable using zonemap (id)", fullTable));
+
+    Dataset<Row> result = spark.sql(String.format("select * from %s where id = 5", fullTable));
+    Assertions.assertEquals(
+        1L, result.count(), "SELECT WHERE id=5 must return exactly one row post-CREATE-INDEX");
+    Row row = result.collectAsList().get(0);
+    Assertions.assertEquals(5, row.getInt(0), "Returned row's id must be 5");
+    Assertions.assertEquals("text_5", row.getString(1), "Returned row's text must be 'text_5'");
   }
 
   /** Open the test table as a Lance dataset; caller is responsible for closing. */

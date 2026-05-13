@@ -22,6 +22,11 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import org.apache.spark.sql.Dataset;
@@ -44,9 +49,10 @@ public class TpcdsQueryRunner {
   private final boolean explain;
   private final QueryMetricsListener metricsListener;
   private final Set<String> queryFilter;
+  private final long queryTimeoutMs;
 
   public TpcdsQueryRunner(SparkSession spark, int iterations) {
-    this(spark, iterations, false, null, null);
+    this(spark, iterations, false, null, null, 0L);
   }
 
   public TpcdsQueryRunner(
@@ -55,6 +61,16 @@ public class TpcdsQueryRunner {
       boolean explain,
       QueryMetricsListener metricsListener,
       String queriesFilter) {
+    this(spark, iterations, explain, metricsListener, queriesFilter, 0L);
+  }
+
+  public TpcdsQueryRunner(
+      SparkSession spark,
+      int iterations,
+      boolean explain,
+      QueryMetricsListener metricsListener,
+      String queriesFilter,
+      long queryTimeoutMs) {
     this.spark = spark;
     this.iterations = iterations;
     this.explain = explain;
@@ -64,6 +80,7 @@ public class TpcdsQueryRunner {
     } else {
       this.queryFilter = null;
     }
+    this.queryTimeoutMs = Math.max(0L, queryTimeoutMs);
   }
 
   /**
@@ -167,11 +184,39 @@ public class TpcdsQueryRunner {
       }
     }
 
-    // Set job group and reset metrics listener
+    // Set job group and reset metrics listener. interruptOnCancel must be true so the
+    // timeout-driven cancelJobGroup actually kills running tasks rather than just marking
+    // them for stopping at the next checkpoint.
     String jobGroup = format + "." + queryName + ".iter" + iteration;
-    spark.sparkContext().setJobGroup(jobGroup, queryName, false);
+    spark.sparkContext().setJobGroup(jobGroup, queryName, queryTimeoutMs > 0L);
     if (metricsListener != null) {
       metricsListener.reset(jobGroup);
+    }
+
+    // Schedule a one-shot cancellation after queryTimeoutMs. The job group is the cancellation
+    // unit; cancelling it raises an exception inside the spark.sql(...).save() call, which the
+    // catch block below recognises via the `timedOut` flag and turns into a "TIMEOUT after Xs"
+    // failure record. Daemon thread + shutdownNow in finally so no scheduler leak survives the
+    // method.
+    ScheduledExecutorService scheduler = null;
+    ScheduledFuture<?> timeoutFuture = null;
+    final AtomicBoolean timedOut = new AtomicBoolean(false);
+    if (queryTimeoutMs > 0L) {
+      scheduler =
+          Executors.newSingleThreadScheduledExecutor(
+              r -> {
+                Thread t = new Thread(r, "query-timeout-" + queryName + "-iter" + iteration);
+                t.setDaemon(true);
+                return t;
+              });
+      timeoutFuture =
+          scheduler.schedule(
+              () -> {
+                timedOut.set(true);
+                spark.sparkContext().cancelJobGroup(jobGroup);
+              },
+              queryTimeoutMs,
+              TimeUnit.MILLISECONDS);
     }
 
     long start = System.currentTimeMillis();
@@ -205,12 +250,30 @@ public class TpcdsQueryRunner {
       return BenchmarkResult.success(queryName, format, iteration, elapsed, metrics, dfpMode);
     } catch (Exception e) {
       long elapsed = System.currentTimeMillis() - start;
+      if (timedOut.get()) {
+        // Timeout-driven cancellation. Use the configured timeout in the message rather than
+        // elapsed time so the user sees the budget they hit (elapsed can be slightly larger
+        // because cancellation propagation is asynchronous).
+        return BenchmarkResult.failure(
+            queryName,
+            format,
+            iteration,
+            elapsed,
+            "TIMEOUT after " + (queryTimeoutMs / 1000L) + "s",
+            dfpMode);
+      }
       String msg = e.getMessage();
       if (msg != null && msg.length() > 200) {
         msg = msg.substring(0, 200) + "...";
       }
       return BenchmarkResult.failure(queryName, format, iteration, elapsed, msg, dfpMode);
     } finally {
+      if (timeoutFuture != null) {
+        timeoutFuture.cancel(false);
+      }
+      if (scheduler != null) {
+        scheduler.shutdownNow();
+      }
       spark.sparkContext().clearJobGroup();
     }
   }

@@ -36,6 +36,10 @@ public class TpcdsBenchmarkRunner {
     boolean explain = false;
     boolean metrics = false;
     String queries = null;
+    // Per-query wall-clock cap. 0 = no timeout. 15-minute default matches the recommendation in
+    // benchmark/DFP-WORKFLOW.md — long enough for the heaviest sf=100 queries (q72/q14b) under
+    // good plans, short enough that a pathological plan doesn't block the whole sweep.
+    long queryTimeoutSeconds = 900L;
     // "default" means do NOT touch spark.lance.runtime.filtering.enabled — Lance's own default
     // (on) applies. "on" / "off" pin the flag. "both" runs each lance query twice, once with
     // DFP on and once with DFP off, so the output CSV can be pivoted into an A/B comparison.
@@ -63,6 +67,13 @@ public class TpcdsBenchmarkRunner {
           break;
         case "--queries":
           queries = args[++i];
+          break;
+        case "--query-timeout-seconds":
+          queryTimeoutSeconds = Long.parseLong(args[++i]);
+          if (queryTimeoutSeconds < 0L) {
+            System.err.println("--query-timeout-seconds must be >= 0 (0 disables the timeout)");
+            System.exit(1);
+          }
           break;
         case "--dfp-mode":
           dfpMode = args[++i];
@@ -114,7 +125,8 @@ public class TpcdsBenchmarkRunner {
 
       TpcdsDataLoader loader = new TpcdsDataLoader(spark, dataDir);
       TpcdsQueryRunner runner =
-          new TpcdsQueryRunner(spark, iterations, explain, metricsListener, queries);
+          new TpcdsQueryRunner(
+              spark, iterations, explain, metricsListener, queries, queryTimeoutSeconds * 1000L);
       List<BenchmarkResult> allResults = new ArrayList<>();
 
       for (String format : formats) {
@@ -169,6 +181,7 @@ public class TpcdsBenchmarkRunner {
             + " [--explain]"
             + " [--metrics]"
             + " [--queries q1,q3,q14a]"
+            + " [--query-timeout-seconds 900]"
             + " [--dfp-mode on|off|both|default]");
   }
 }

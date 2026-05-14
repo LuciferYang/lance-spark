@@ -388,12 +388,11 @@ public abstract class BaseDateMilliRoundtripTest {
   }
 
   /**
-   * Documents the known limitation: Date(MILLISECOND) inside a List degrades to Date(DAY) on
-   * roundtrip because {@code LanceArrowUtils.fromArrowField} returns {@code DataType} without
-   * metadata for array elements.
+   * Date(MILLISECOND) inside a List survives a Spark roundtrip. The inner element's metadata is
+   * embedded under {@code _lance.element} on the parent ArrayType, then restored on writeback.
    */
   @Test
-  public void testDateMilliInArrayDegradesToDay() throws Exception {
+  public void testDateMilliInArrayPreservedOnRoundtrip() throws Exception {
     String srcPath = tempDir.resolve("array_src.lance").toString();
     String dstPath = tempDir.resolve("array_dst.lance").toString();
 
@@ -441,13 +440,13 @@ public abstract class BaseDateMilliRoundtripTest {
     Dataset<Row> df = spark.read().format(LanceDataSource.name).load(srcPath);
     df.write().format(LanceDataSource.name).save(dstPath);
 
-    // Known limitation: list child degrades to Date(DAY)
+    // List child should remain Date(MILLISECOND) after Spark roundtrip.
     Schema outputSchema = openAndGetSchema(dstPath);
     Field outList = outputSchema.findField("dates");
     assertEquals(
-        new ArrowType.Date(DateUnit.DAY),
+        new ArrowType.Date(DateUnit.MILLISECOND),
         outList.getChildren().get(0).getType(),
-        "Known limitation: Date(MILLISECOND) inside List degrades to Date(DAY) on roundtrip");
+        "Date(MILLISECOND) inside List should be preserved on roundtrip");
 
     // Values should still be correct (dates are the right day values)
     List<Row> rows =

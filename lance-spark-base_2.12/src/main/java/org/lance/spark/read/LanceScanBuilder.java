@@ -366,6 +366,18 @@ public class LanceScanBuilder
       LanceSparkReadOptions forwardedReadOptions =
           lazyReadOptions != null ? lazyReadOptions : readOptions;
 
+      // Register the soft affinity listener so the consistent hash ring tracks executor lifecycle.
+      if (org.lance.spark.internal.LanceExecutorCache.isEnabled()
+          && forwardedReadOptions.isDatasetCacheEnabled()) {
+        try {
+          org.apache.spark.sql.SparkSession session = org.apache.spark.sql.SparkSession.active();
+          org.apache.spark.sql.lance.internal.LanceSoftAffinityListener$.MODULE$.ensureRegistered(
+              session.sparkContext());
+        } catch (Exception e) {
+          // SparkSession not available — affinity disabled, cache still works without hints.
+        }
+      }
+
       Optional<String> whereCondition =
           FilterPushDown.compileFiltersToSqlWhereClause(pushedFilters);
       return new LanceScan(

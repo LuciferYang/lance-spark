@@ -52,7 +52,7 @@ import java.util.TreeMap;
  * on-disk directory name under the cache root. Each column file within that directory is named
  * {@code <column_name>.arrow}.
  */
-final class LanceExecutorCacheKey {
+public final class LanceExecutorCacheKey {
   private final String datasetUri;
   private final Integer pinnedVersion;
   private final int fragmentId;
@@ -81,7 +81,7 @@ final class LanceExecutorCacheKey {
 
   private final String fingerprint;
 
-  LanceExecutorCacheKey(
+  public LanceExecutorCacheKey(
       String datasetUri,
       Integer pinnedVersion,
       int fragmentId,
@@ -95,7 +95,7 @@ final class LanceExecutorCacheKey {
     this.fingerprint = computeFingerprint();
   }
 
-  String fingerprint() {
+  public String fingerprint() {
     return fingerprint;
   }
 

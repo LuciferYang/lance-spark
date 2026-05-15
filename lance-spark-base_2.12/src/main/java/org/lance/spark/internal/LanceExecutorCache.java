@@ -93,30 +93,8 @@ public final class LanceExecutorCache {
                     LOG.trace("ignored", ignored);
                   }
                   System.err.println(cache.metricsSnapshot("shutdown"));
-                  cache.writeMetricsFile();
                 },
                 "lance-exec-cache-shutdown"));
-  }
-
-  private void writeMetricsFile() {
-    try {
-      Path metricsFile = cacheDir.resolve("metrics.json");
-      String json =
-          String.format(
-              java.util.Locale.ROOT,
-              "{\"hits\":%d,\"misses\":%d,\"partialHits\":%d,\"evictions\":%d,"
-                  + "\"writeFailures\":%d,\"entries\":%d,\"totalBytes\":%d}",
-              hits(),
-              misses(),
-              partialHits(),
-              evictions(),
-              writeFailures(),
-              entryCount(),
-              totalBytes());
-      Files.writeString(metricsFile, json);
-    } catch (Throwable t) {
-      LOG.trace("Failed to write metrics file", t);
-    }
   }
 
   static void resetForTesting(LanceExecutorCache replacement) {
@@ -571,7 +549,6 @@ public final class LanceExecutorCache {
     long totalOps = hits.get() + misses.get() + partialHits.get();
     if (totalOps > 0 && totalOps % PERIODIC_LOG_EVERY_OPS == 0) {
       logMetricsSummary("progress");
-      writeMetricsFile();
     }
   }
 

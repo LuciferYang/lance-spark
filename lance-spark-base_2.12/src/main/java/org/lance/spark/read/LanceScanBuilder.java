@@ -366,6 +366,20 @@ public class LanceScanBuilder
       LanceSparkReadOptions forwardedReadOptions =
           lazyReadOptions != null ? lazyReadOptions : readOptions;
 
+      // Ensure the cache-aware scheduling endpoint is registered on the driver so executors
+      // can report cache locations back for preferredLocations hints.
+      if (org.lance.spark.internal.LanceExecutorCache.isEnabled()
+          && forwardedReadOptions.isDatasetCacheEnabled()) {
+        try {
+          org.apache.spark.sql.SparkSession session = org.apache.spark.sql.SparkSession.active();
+          org.apache.spark.sql.lance.internal.LanceCacheLocationEndpoint$.MODULE$.ensureRegistered(
+              session.sparkContext());
+        } catch (Exception e) {
+          // SparkSession not available or endpoint registration failed — cache still works,
+          // just without scheduling hints.
+        }
+      }
+
       Optional<String> whereCondition =
           FilterPushDown.compileFiltersToSqlWhereClause(pushedFilters);
       return new LanceScan(

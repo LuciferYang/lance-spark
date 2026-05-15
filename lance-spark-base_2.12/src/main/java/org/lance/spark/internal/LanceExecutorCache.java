@@ -440,6 +440,13 @@ public final class LanceExecutorCache {
         totalBytes.addAndGet(addedBytes);
       }
       evictIfOverLimit();
+      boolean stillCached;
+      synchronized (lruIndex) {
+        stillCached = lruIndex.containsKey(fingerprint);
+      }
+      if (stillCached) {
+        reportCacheLocation(fingerprint);
+      }
     } catch (Throwable t) {
       failure = t;
       for (ArrowStreamWriter w : writers) {
@@ -565,6 +572,17 @@ public final class LanceExecutorCache {
         entryCount(),
         totalBytes() / (1024 * 1024),
         writeFailures());
+  }
+
+  private void reportCacheLocation(String fingerprint) {
+    try {
+      LanceCacheLocationReporter reporter = LanceCacheLocationReporter.getOrCreate();
+      if (reporter != null) {
+        reporter.reportCached(fingerprint);
+      }
+    } catch (Throwable t) {
+      LOG.debug("Failed to report cache location: {}", t.getMessage());
+    }
   }
 
   private void maybeLogPeriodic() {

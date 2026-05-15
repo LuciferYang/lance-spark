@@ -202,6 +202,40 @@ public class LanceScan
             ? readOptions
             : readOptions.withVersion(Math.toIntExact(resolvedVersion));
 
+    // Pre-compute preferred cache locations for each split.
+    String[][] cacheLocations = new String[finalSplits.size()][];
+    if (org.lance.spark.internal.LanceExecutorCache.isEnabled()) {
+      org.lance.spark.internal.LanceCacheLocationTracker tracker =
+          org.lance.spark.internal.LanceCacheLocationTracker.getInstance();
+      java.util.Map<String, String> baseOpts =
+          resolvedReadOptions.getStorageOptions() != null
+              ? resolvedReadOptions.getStorageOptions()
+              : java.util.Collections.emptyMap();
+      java.util.Map<String, String> mergedOpts =
+          org.lance.spark.LanceRuntime.mergeStorageOptions(
+              baseOpts,
+              initialStorageOptions != null
+                  ? initialStorageOptions
+                  : java.util.Collections.emptyMap());
+      for (int idx = 0; idx < finalSplits.size(); idx++) {
+        try {
+          int fragId = finalSplits.get(idx).getFragments().get(0);
+          org.lance.spark.internal.LanceExecutorCacheKey key =
+              new org.lance.spark.internal.LanceExecutorCacheKey(
+                  resolvedReadOptions.getDatasetUri(),
+                  resolvedReadOptions.getVersion(),
+                  fragId,
+                  resolvedReadOptions.getBatchSize(),
+                  mergedOpts);
+          cacheLocations[idx] = tracker.getPreferredLocations(key.fingerprint());
+        } catch (Exception e) {
+          cacheLocations[idx] = new String[0];
+        }
+      }
+    } else {
+      java.util.Arrays.fill(cacheLocations, new String[0]);
+    }
+
     InputPartition[] result =
         IntStream.range(0, finalSplits.size())
             .mapToObj(
@@ -226,7 +260,8 @@ public class LanceScan
                       initialStorageOptions,
                       namespaceImpl,
                       namespaceProperties,
-                      partKeyRow);
+                      partKeyRow,
+                      cacheLocations[i]);
                 })
             .toArray(InputPartition[]::new);
 
@@ -328,6 +363,8 @@ public class LanceScan
    * LanceSplit#planScan(LanceSparkReadOptions)} which maps {@code Fragment.getId()} directly.
    *
    * <p>Note: an empty allowedIds set is valid — it means the filter is unsatisfiable (e.g. {@code
+
+  /**
    * _rowaddr = 0 AND _rowaddr = 4294967296L}) and no fragments can match, resulting in zero rows
    * returned.
    */

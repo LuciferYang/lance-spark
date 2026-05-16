@@ -15,7 +15,9 @@ package org.lance.spark.vectorized;
 
 import org.lance.spark.utils.BlobUtils;
 
+import org.apache.arrow.memory.ArrowBuf;
 import org.apache.arrow.vector.DateMilliVector;
+import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.arrow.vector.LargeVarCharVector;
 import org.apache.arrow.vector.TimeStampMilliTZVector;
@@ -58,6 +60,7 @@ public class LanceArrowColumnVector extends ColumnVector {
   private DateMilliAccessor dateMilliAccessor;
   private TimestampUnitAccessor timestampUnitAccessor;
   private LanceStructAccessor structAccessor;
+  private LanceDecimalAccessor decimalAccessor;
   private ArrowColumnVector arrowColumnVector;
 
   public LanceArrowColumnVector(ValueVector vector) {
@@ -104,6 +107,8 @@ public class LanceArrowColumnVector extends ColumnVector {
       timestampUnitAccessor = new TimestampUnitAccessor((TimeStampNanoTZVector) vector, 1L, 1_000L);
     } else if (vector instanceof DateMilliVector) {
       dateMilliAccessor = new DateMilliAccessor((DateMilliVector) vector);
+    } else if (vector instanceof DecimalVector) {
+      decimalAccessor = new LanceDecimalAccessor((DecimalVector) vector);
     } else if (vector.getClass().getName().equals("org.apache.arrow.vector.Float2Vector")) {
       // Float2Vector is only available in Arrow 18+ (Spark 4.0+).
       // Use class name check to avoid compile-time dependency.
@@ -431,6 +436,9 @@ public class LanceArrowColumnVector extends ColumnVector {
 
   @Override
   public Decimal getDecimal(int rowId, int precision, int scale) {
+    if (decimalAccessor != null) {
+      return decimalAccessor.getDecimal(rowId, precision, scale);
+    }
     if (arrowColumnVector != null) {
       return arrowColumnVector.getDecimal(rowId, precision, scale);
     }
@@ -480,5 +488,34 @@ public class LanceArrowColumnVector extends ColumnVector {
    */
   public BlobStructAccessor getBlobStructAccessor() {
     return blobStructAccessor;
+  }
+
+  private static final int DECIMAL128_BYTE_WIDTH = 16;
+
+  private static class LanceDecimalAccessor {
+    private final DecimalVector vector;
+    private final ArrowBuf dataBuffer;
+    private final boolean useFastPath;
+
+    LanceDecimalAccessor(DecimalVector vector) {
+      this.vector = vector;
+      this.dataBuffer = vector.getDataBuffer();
+      this.useFastPath = vector.getPrecision() <= 18;
+    }
+
+    Decimal getDecimal(int rowId, int precision, int scale) {
+      if (vector.isNull(rowId)) {
+        return null;
+      }
+      if (useFastPath) {
+        long offset = (long) rowId * DECIMAL128_BYTE_WIDTH;
+        long low = dataBuffer.getLong(offset);
+        long high = dataBuffer.getLong(offset + 8);
+        if (high == 0 || (high == -1 && low < 0)) {
+          return Decimal.apply(low, precision, scale);
+        }
+      }
+      return Decimal.apply(vector.getObject(rowId), precision, scale);
+    }
   }
 }

@@ -67,15 +67,25 @@ public class MultiTypeVerifyTest {
           ? totalRows - rowsDecoded
           : (1 << chunkLogValues[c]);
 
-      int defSize = (pageData.chunkData[dataOffset + 2] & 0xFF)
-          | ((pageData.chunkData[dataOffset + 3] & 0xFF) << 8);
+      // Parse chunk header - format depends on nullable
+      int numLevels = (pageData.chunkData[dataOffset] & 0xFF)
+          | ((pageData.chunkData[dataOffset + 1] & 0xFF) << 8);
 
-      int nulls = LanceRleDecoder.decodeValidity(
-          pageData.chunkData, dataOffset + 8, defSize, numValues, validity, 0);
-      nullCount += nulls;
-
-      int offset = dataOffset + 8 + defSize;
-      offset = (offset + 7) & ~7;
+      int offset;
+      if (numLevels > 0) {
+        // Nullable: [num_levels: u16][def_size: u16][value_buf_size: u32][pad][def][pad][value]
+        int defSize = (pageData.chunkData[dataOffset + 2] & 0xFF)
+            | ((pageData.chunkData[dataOffset + 3] & 0xFF) << 8);
+        int nulls = LanceRleDecoder.decodeValidity(
+            pageData.chunkData, dataOffset + 8, defSize, numValues, validity, 0);
+        nullCount += nulls;
+        offset = dataOffset + 8 + defSize;
+        offset = (offset + 7) & ~7;
+      } else {
+        // Non-nullable: [num_levels: u16 = 0][value_buf_size: u32][padding][value]
+        for (int i = 0; i < numValues; i++) validity[i] = true;
+        offset = dataOffset + 8; // 2 + 4 + 2 padding = 8
+      }
 
       if (typeWidth == 4) {
         int bitWidth = getInt(pageData.chunkData, offset);

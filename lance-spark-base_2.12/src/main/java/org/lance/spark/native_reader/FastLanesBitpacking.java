@@ -88,4 +88,73 @@ public class FastLanesBitpacking {
         | ((buf[offset + 2] & 0xFF) << 16)
         | ((buf[offset + 3] & 0xFF) << 24);
   }
+
+  // ========== u64 (long) support ==========
+  private static final int T64 = 64;
+  private static final int LANES64 = 1024 / T64; // = 16
+
+  private static int fastLanesIndex64(int row, int lane) {
+    int o = row / 8;
+    int s = row % 8;
+    return (FL_ORDER[o] * 16) + (s * 128) + lane;
+  }
+
+  /**
+   * Decode 1024 bitpacked u64 values from a FastLanes-encoded buffer.
+   */
+  public static void unpack1024Long(byte[] packed, int packedOffset, int bitWidth, long[] output,
+      int outputOffset) {
+    if (bitWidth == 0) {
+      for (int i = 0; i < ELEMS_PER_CHUNK; i++) {
+        output[outputOffset + i] = 0;
+      }
+      return;
+    }
+    if (bitWidth == 64) {
+      for (int lane = 0; lane < LANES64; lane++) {
+        for (int row = 0; row < T64; row++) {
+          int idx = fastLanesIndex64(row, lane);
+          output[outputOffset + idx] = getLongLE(packed, packedOffset + (LANES64 * row + lane) * 8);
+        }
+      }
+      return;
+    }
+
+    long mask = (1L << bitWidth) - 1;
+    for (int lane = 0; lane < LANES64; lane++) {
+      long src = getLongLE(packed, packedOffset + lane * 8);
+      for (int row = 0; row < T64; row++) {
+        int currWord = (row * bitWidth) / T64;
+        int shift = (row * bitWidth) % T64;
+        int nextWord = ((row + 1) * bitWidth) / T64;
+        long tmp;
+
+        if (nextWord > currWord) {
+          int remainingBits = ((row + 1) * bitWidth) % T64;
+          int currentBits = bitWidth - remainingBits;
+          tmp = (src >>> shift) & ((1L << currentBits) - 1);
+          if (nextWord < bitWidth) {
+            src = getLongLE(packed, packedOffset + (LANES64 * nextWord + lane) * 8);
+            tmp |= (src & ((1L << remainingBits) - 1)) << currentBits;
+          }
+        } else {
+          tmp = (src >>> shift) & mask;
+        }
+
+        int idx = fastLanesIndex64(row, lane);
+        output[outputOffset + idx] = tmp;
+      }
+    }
+  }
+
+  private static long getLongLE(byte[] buf, int offset) {
+    return (buf[offset] & 0xFFL)
+        | ((buf[offset + 1] & 0xFFL) << 8)
+        | ((buf[offset + 2] & 0xFFL) << 16)
+        | ((buf[offset + 3] & 0xFFL) << 24)
+        | ((buf[offset + 4] & 0xFFL) << 32)
+        | ((buf[offset + 5] & 0xFFL) << 40)
+        | ((buf[offset + 6] & 0xFFL) << 48)
+        | ((buf[offset + 7] & 0xFFL) << 56);
+  }
 }

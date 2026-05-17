@@ -59,6 +59,7 @@ public class LanceSparkReadOptions implements Serializable {
   public static final String CONFIG_TOP_N_PUSH_DOWN = "topN_push_down";
 
   public static final String CONFIG_NEAREST = "nearest";
+  public static final String CONFIG_USE_NATIVE_READER = "use_native_reader";
 
   /**
    * Whether executors should rebuild the namespace client and re-fetch storage options via {@code
@@ -252,6 +253,13 @@ public class LanceSparkReadOptions implements Serializable {
 
   public int getBatchSize() {
     return batchSize;
+  }
+
+  public boolean isUseNativeReader() {
+    return Boolean.parseBoolean(
+        System.getProperty(
+            CONFIG_USE_NATIVE_READER,
+            System.getenv().getOrDefault("LANCE_USE_NATIVE_READER", "false")));
   }
 
   public Query getNearest() {

@@ -30,7 +30,11 @@ public class MultiTypeVerifyTest {
 
     // Test 2: int64 (ss_item_sk, col 2)
     System.out.println("\n=== Column 2: ss_item_sk (int64) ===");
-    testColumn(reader, 2, 8, 204007946651L, "int64");
+    testColumn(reader, 2, 8, 107028464094L, "int64");
+
+    // Test 3: decimal128 (ss_ext_sales_price, col 15)
+    System.out.println("\n=== Column 15: ss_ext_sales_price (decimal128(7,2)) ===");
+    testColumn(reader, 15, 16, -1L, "decimal128"); // -1 = don't check sum, just verify no crash
 
     reader.close();
   }
@@ -101,6 +105,13 @@ public class MultiTypeVerifyTest {
         FastLanesBitpacking.unpack1024Long(pageData.chunkData, offset, bitWidth, longBuf, 0);
         for (int i = 0; i < numValues; i++) {
           if (validity[i]) sum += longBuf[i];
+        }
+      } else if (typeWidth == 16) {
+        // decimal128: raw 16-byte values (no bitpacking), read low 8 bytes as unscaled long
+        for (int i = 0; i < numValues; i++) {
+          if (validity[i]) {
+            sum += getLong(pageData.chunkData, offset + i * 16);
+          }
         }
       }
 

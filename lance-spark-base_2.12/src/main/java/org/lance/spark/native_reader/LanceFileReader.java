@@ -71,33 +71,43 @@ public class LanceFileReader implements AutoCloseable {
    * Returns the raw bytes for buffer 0 (chunk metadata) and buffer 1 (chunk data).
    */
   public ColumnPageData readColumnPage(int columnIndex) throws IOException {
+    java.util.List<ColumnPageData> pages = readAllColumnPages(columnIndex);
+    return pages.get(0);
+  }
+
+  /**
+   * Read ALL pages for a column. Returns a list of ColumnPageData (one per page).
+   */
+  public java.util.List<ColumnPageData> readAllColumnPages(int columnIndex) throws IOException {
     long colMetaPos = cmoTable.getPosition(columnIndex);
     long colMetaSize = cmoTable.getSize(columnIndex);
 
-    // Read column metadata (protobuf)
     byte[] colMeta = new byte[(int) colMetaSize];
     try (FSDataInputStream in = fs.open(path)) {
       in.readFully(colMetaPos, colMeta);
     }
 
-    // Parse column metadata to get page buffer offsets/sizes
-    // Simple protobuf parsing for ColumnMetadata
-    PageInfo pageInfo = parseColumnMetadata(colMeta);
+    java.util.List<PageInfo> pageInfos = parseAllPages(colMeta);
+    java.util.List<ColumnPageData> result = new java.util.ArrayList<>(pageInfos.size());
 
-    // Read page buffers
-    byte[] buf0 = new byte[(int) pageInfo.bufferSizes[0]];
-    byte[] buf1 = new byte[(int) pageInfo.bufferSizes[1]];
     try (FSDataInputStream in = fs.open(path)) {
-      in.readFully(pageInfo.bufferOffsets[0], buf0);
-      in.readFully(pageInfo.bufferOffsets[1], buf1);
+      for (PageInfo pageInfo : pageInfos) {
+        byte[] buf0 = new byte[(int) pageInfo.bufferSizes[0]];
+        byte[] buf1 = new byte[(int) pageInfo.bufferSizes[1]];
+        in.readFully(pageInfo.bufferOffsets[0], buf0);
+        in.readFully(pageInfo.bufferOffsets[1], buf1);
+        result.add(new ColumnPageData(buf0, buf1, pageInfo.numRows));
+      }
     }
-
-    return new ColumnPageData(buf0, buf1, pageInfo.numRows);
+    return result;
   }
 
   private PageInfo parseColumnMetadata(byte[] data) throws IOException {
-    // Minimal protobuf parser for ColumnMetadata
-    // Field 2 (repeated Page) → first page → fields 1,2,3
+    return parseAllPages(data).get(0);
+  }
+
+  private java.util.List<PageInfo> parseAllPages(byte[] data) throws IOException {
+    java.util.List<PageInfo> pages = new java.util.ArrayList<>();
     int pos = 0;
     while (pos < data.length) {
       int tag = readVarint(data, pos);
@@ -105,21 +115,24 @@ public class LanceFileReader implements AutoCloseable {
       int fieldNum = tag >>> 3;
       int wireType = tag & 7;
 
-      if (wireType == 2) { // length-delimited
+      if (wireType == 2) {
         int len = readVarint(data, pos);
         pos += varintSize(data, pos);
-        if (fieldNum == 2) { // Page message
-          return parsePage(data, pos, len);
+        if (fieldNum == 2) {
+          pages.add(parsePage(data, pos, len));
         }
         pos += len;
-      } else if (wireType == 0) { // varint
+      } else if (wireType == 0) {
         readVarint(data, pos);
         pos += varintSize(data, pos);
       } else {
         throw new IOException("Unexpected wire type: " + wireType);
       }
     }
-    throw new IOException("No page found in column metadata");
+    if (pages.isEmpty()) {
+      throw new IOException("No pages found in column metadata");
+    }
+    return pages;
   }
 
   private PageInfo parsePage(byte[] data, int start, int len) throws IOException {

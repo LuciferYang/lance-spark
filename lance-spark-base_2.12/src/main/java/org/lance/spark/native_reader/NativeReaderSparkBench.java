@@ -4,25 +4,29 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
 
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Standalone benchmark that simulates a Spark PartitionReader using Java-native
- * Lance decode. Reads miniblock data, decodes with FastLanes, writes to
- * OnHeapColumnVector, and computes sum (like Spark codegen would).
+ * Standalone benchmark that simulates a Spark PartitionReader using Java-native Lance decode. Reads
+ * miniblock data, decodes with FastLanes, writes to OnHeapColumnVector, and computes sum (like
+ * Spark codegen would).
  *
- * This proves the end-to-end performance of the Java-native approach
- * including Spark's ColumnVector overhead.
+ * <p>This proves the end-to-end performance of the Java-native approach including Spark's
+ * ColumnVector overhead.
  */
 public class NativeReaderSparkBench {
   public static void main(String[] args) throws Exception {
@@ -48,8 +52,17 @@ public class NativeReaderSparkBench {
     int[] decodeBuffer = new int[1024];
 
     // Warmup
-    simulateSparkScan(buf1, buf0, chunkSizes, chunkLogValues, numChunks,
-        validity, totalFragRows, batchSize, col, decodeBuffer);
+    simulateSparkScan(
+        buf1,
+        buf0,
+        chunkSizes,
+        chunkLogValues,
+        numChunks,
+        validity,
+        totalFragRows,
+        batchSize,
+        col,
+        decodeBuffer);
 
     // Benchmark: 144 fragments = 288M rows
     int iterations = 144;
@@ -57,8 +70,18 @@ public class NativeReaderSparkBench {
     long totalRows = 0;
     long start = System.currentTimeMillis();
     for (int iter = 0; iter < iterations; iter++) {
-      totalSum += simulateSparkScan(buf1, buf0, chunkSizes, chunkLogValues, numChunks,
-          validity, totalFragRows, batchSize, col, decodeBuffer);
+      totalSum +=
+          simulateSparkScan(
+              buf1,
+              buf0,
+              chunkSizes,
+              chunkLogValues,
+              numChunks,
+              validity,
+              totalFragRows,
+              batchSize,
+              col,
+              decodeBuffer);
       totalRows += totalFragRows;
     }
     long elapsed = System.currentTimeMillis() - start;
@@ -73,10 +96,17 @@ public class NativeReaderSparkBench {
     System.out.println("  Lance JNI (Spark):  ~1900ms / 6.6 ns/row");
   }
 
-  private static long simulateSparkScan(byte[] buf1, byte[] buf0,
-      int[] chunkSizes, int[] chunkLogValues, int numChunks,
-      byte[] validity, int totalFragRows, int batchSize,
-      OnHeapColumnVector col, int[] decodeBuffer) {
+  private static long simulateSparkScan(
+      byte[] buf1,
+      byte[] buf0,
+      int[] chunkSizes,
+      int[] chunkLogValues,
+      int numChunks,
+      byte[] validity,
+      int totalFragRows,
+      int batchSize,
+      OnHeapColumnVector col,
+      int[] decodeBuffer) {
     long sum = 0;
     int dataOffset = 0;
     int rowsDecoded = 0;
@@ -84,9 +114,8 @@ public class NativeReaderSparkBench {
 
     for (int c = 0; c < numChunks; c++) {
       int chunkSize = chunkSizes[c];
-      int numValues = chunkLogValues[c] == 0
-          ? totalFragRows - rowsDecoded
-          : (1 << chunkLogValues[c]);
+      int numValues =
+          chunkLogValues[c] == 0 ? totalFragRows - rowsDecoded : (1 << chunkLogValues[c]);
 
       // Parse chunk header
       int defSize = (buf1[dataOffset + 2] & 0xFF) | ((buf1[dataOffset + 3] & 0xFF) << 8);
@@ -96,8 +125,11 @@ public class NativeReaderSparkBench {
       offset = (offset + 7) & ~7;
 
       // Read bit_width and decode
-      int bitWidth = (buf1[offset] & 0xFF) | ((buf1[offset + 1] & 0xFF) << 8)
-          | ((buf1[offset + 2] & 0xFF) << 16) | ((buf1[offset + 3] & 0xFF) << 24);
+      int bitWidth =
+          (buf1[offset] & 0xFF)
+              | ((buf1[offset + 1] & 0xFF) << 8)
+              | ((buf1[offset + 2] & 0xFF) << 16)
+              | ((buf1[offset + 3] & 0xFF) << 24);
       offset += 4;
 
       FastLanesBitpacking.unpack1024(buf1, offset, bitWidth, decodeBuffer, 0);

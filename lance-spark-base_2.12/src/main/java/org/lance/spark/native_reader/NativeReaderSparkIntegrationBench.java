@@ -1,18 +1,30 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.lance.spark.native_reader;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 /**
- * Benchmark: NativeLancePartitionReader in a Spark-like loop.
- * Reads one fragment from S3, decodes with Java-native reader,
- * consumes batches like Spark would.
+ * Benchmark: NativeLancePartitionReader in a Spark-like loop. Reads one fragment from S3, decodes
+ * with Java-native reader, consumes batches like Spark would.
  */
 public class NativeReaderSparkIntegrationBench {
   public static void main(String[] args) throws Exception {
-    String filePath = "s3a://benchmark/tpcds-sf-100/store_sales.lance/data/"
-        + "10111110011001111000001116c9f243f8b974c6b80dafd4a1.lance";
+    String filePath =
+        "s3a://benchmark/tpcds-sf-100/store_sales.lance/data/"
+            + "10111110011001111000001116c9f243f8b974c6b80dafd4a1.lance";
     int columnIndex = 10; // ss_quantity
     int batchSize = 4096;
 
@@ -23,8 +35,9 @@ public class NativeReaderSparkIntegrationBench {
     conf.set("fs.s3a.path.style.access", "true");
     conf.set("fs.s3a.connection.ssl.enabled", "false");
 
-    org.apache.spark.sql.types.StructType schema = new org.apache.spark.sql.types.StructType()
-        .add("ss_quantity", org.apache.spark.sql.types.DataTypes.IntegerType, true);
+    org.apache.spark.sql.types.StructType schema =
+        new org.apache.spark.sql.types.StructType()
+            .add("ss_quantity", org.apache.spark.sql.types.DataTypes.IntegerType, true);
 
     // Open file once (simulates page-cache-hot scenario)
     System.out.println("Opening file and reading page data...");

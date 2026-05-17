@@ -4,6 +4,12 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
 
@@ -11,8 +17,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Java implementation of FastLanes bitpacking decode for u32 values.
- * Decodes 1024 values per chunk from a bitpacked buffer.
+ * Java implementation of FastLanes bitpacking decode for u32 values. Decodes 1024 values per chunk
+ * from a bitpacked buffer.
  */
 public class FastLanesBitpacking {
   private static final int[] FL_ORDER = {0, 4, 2, 6, 1, 5, 3, 7};
@@ -35,8 +41,8 @@ public class FastLanesBitpacking {
    * @param output output array (must have at least 1024 elements)
    * @param outputOffset offset into output array
    */
-  public static void unpack1024(byte[] packed, int packedOffset, int bitWidth, int[] output,
-      int outputOffset) {
+  public static void unpack1024(
+      byte[] packed, int packedOffset, int bitWidth, int[] output, int outputOffset) {
     if (bitWidth == 0) {
       for (int i = 0; i < ELEMS_PER_CHUNK; i++) {
         output[outputOffset + i] = 0;
@@ -44,8 +50,8 @@ public class FastLanesBitpacking {
       return;
     }
     if (bitWidth == 32) {
-      ByteBuffer buf = ByteBuffer.wrap(packed, packedOffset, ELEMS_PER_CHUNK * 4)
-          .order(ByteOrder.LITTLE_ENDIAN);
+      ByteBuffer buf =
+          ByteBuffer.wrap(packed, packedOffset, ELEMS_PER_CHUNK * 4).order(ByteOrder.LITTLE_ENDIAN);
       for (int lane = 0; lane < LANES; lane++) {
         for (int row = 0; row < T; row++) {
           int idx = fastLanesIndex(row, lane);
@@ -99,11 +105,9 @@ public class FastLanesBitpacking {
     return (FL_ORDER[o] * 16) + (s * 128) + lane;
   }
 
-  /**
-   * Decode 1024 bitpacked u64 values from a FastLanes-encoded buffer.
-   */
-  public static void unpack1024Long(byte[] packed, int packedOffset, int bitWidth, long[] output,
-      int outputOffset) {
+  /** Decode 1024 bitpacked u64 values from a FastLanes-encoded buffer. */
+  public static void unpack1024Long(
+      byte[] packed, int packedOffset, int bitWidth, long[] output, int outputOffset) {
     if (bitWidth == 0) {
       for (int i = 0; i < ELEMS_PER_CHUNK; i++) {
         output[outputOffset + i] = 0;

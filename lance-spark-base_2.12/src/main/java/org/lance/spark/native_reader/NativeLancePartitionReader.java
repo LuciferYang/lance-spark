@@ -4,18 +4,20 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
-import org.apache.spark.sql.execution.vectorized.WritableColumnVector;
 import org.apache.spark.sql.types.DataType;
-import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
@@ -24,9 +26,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Spark PartitionReader that reads Lance v2.2 files using pure Java decode.
- * No JNI, no Arrow, no tokio. Directly reads miniblock data and decodes
- * with FastLanes bitpacking + RLE validity.
+ * Spark PartitionReader that reads Lance v2.2 files using pure Java decode. No JNI, no Arrow, no
+ * tokio. Directly reads miniblock data and decodes with FastLanes bitpacking + RLE validity.
  *
  * <p>MVP: supports int32 columns only. Other types fall back to existing reader.
  */
@@ -55,8 +56,9 @@ public class NativeLancePartitionReader implements PartitionReader<ColumnarBatch
   private final ColumnarBatch batch;
   private boolean exhausted;
 
-  public NativeLancePartitionReader(String filePath, int columnIndex, int batchSize,
-      StructType schema, Configuration conf) throws IOException {
+  public NativeLancePartitionReader(
+      String filePath, int columnIndex, int batchSize, StructType schema, Configuration conf)
+      throws IOException {
     this.columnIndex = columnIndex;
     this.batchSize = batchSize;
     this.schema = schema;
@@ -82,8 +84,8 @@ public class NativeLancePartitionReader implements PartitionReader<ColumnarBatch
     // Allocate output column vector
     DataType dataType = schema.fields()[0].dataType();
     this.outputColumn = new OnHeapColumnVector(batchSize, dataType);
-    this.batch = new ColumnarBatch(
-        new org.apache.spark.sql.vectorized.ColumnVector[]{outputColumn});
+    this.batch =
+        new ColumnarBatch(new org.apache.spark.sql.vectorized.ColumnVector[] {outputColumn});
 
     this.currentChunk = 0;
     this.dataOffset = 0;
@@ -99,21 +101,24 @@ public class NativeLancePartitionReader implements PartitionReader<ColumnarBatch
     int batchRows = 0;
 
     while (batchRows < batchSize && currentChunk < numChunks) {
-      int numValues = chunkLogValues[currentChunk] == 0
-          ? totalRows - rowsDecoded
-          : (1 << chunkLogValues[currentChunk]);
+      int numValues =
+          chunkLogValues[currentChunk] == 0
+              ? totalRows - rowsDecoded
+              : (1 << chunkLogValues[currentChunk]);
 
       // Decode validity
-      int defSize = (chunkData[dataOffset + 2] & 0xFF)
-          | ((chunkData[dataOffset + 3] & 0xFF) << 8);
-      LanceRleDecoder.decodeValidity(chunkData, dataOffset + 8, defSize,
-          numValues, validityBuffer, 0);
+      int defSize = (chunkData[dataOffset + 2] & 0xFF) | ((chunkData[dataOffset + 3] & 0xFF) << 8);
+      LanceRleDecoder.decodeValidity(
+          chunkData, dataOffset + 8, defSize, numValues, validityBuffer, 0);
 
       // Decode values
       int offset = dataOffset + 8 + defSize;
       offset = (offset + 7) & ~7;
-      int bitWidth = (chunkData[offset] & 0xFF) | ((chunkData[offset + 1] & 0xFF) << 8)
-          | ((chunkData[offset + 2] & 0xFF) << 16) | ((chunkData[offset + 3] & 0xFF) << 24);
+      int bitWidth =
+          (chunkData[offset] & 0xFF)
+              | ((chunkData[offset + 1] & 0xFF) << 8)
+              | ((chunkData[offset + 2] & 0xFF) << 16)
+              | ((chunkData[offset + 3] & 0xFF) << 24);
       offset += 4;
       FastLanesBitpacking.unpack1024(chunkData, offset, bitWidth, decodeBuffer, 0);
 

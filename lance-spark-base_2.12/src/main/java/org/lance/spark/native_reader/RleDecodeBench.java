@@ -1,3 +1,16 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.lance.spark.native_reader;
 
 import java.io.*;
@@ -5,8 +18,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Verify RLE decoder correctness and benchmark full decode pipeline
- * (FastLanes + RLE validity) without pre-exported validity bitmap.
+ * Verify RLE decoder correctness and benchmark full decode pipeline (FastLanes + RLE validity)
+ * without pre-exported validity bitmap.
  */
 public class RleDecodeBench {
   public static void main(String[] args) throws Exception {
@@ -42,8 +55,8 @@ public class RleDecodeBench {
     System.out.println("\n=== Full pipeline: FastLanes + RLE validity ===");
 
     // Warmup
-    decodeFragment(buf1, chunkSizes, chunkLogValues, numChunks, totalRows,
-        decodeBuffer, validityBuffer);
+    decodeFragment(
+        buf1, chunkSizes, chunkLogValues, numChunks, totalRows, decodeBuffer, validityBuffer);
 
     // Benchmark: 144 fragments
     int iterations = 144;
@@ -51,8 +64,9 @@ public class RleDecodeBench {
     long totalDecoded = 0;
     long start = System.currentTimeMillis();
     for (int iter = 0; iter < iterations; iter++) {
-      totalSum += decodeFragment(buf1, chunkSizes, chunkLogValues, numChunks, totalRows,
-          decodeBuffer, validityBuffer);
+      totalSum +=
+          decodeFragment(
+              buf1, chunkSizes, chunkLogValues, numChunks, totalRows, decodeBuffer, validityBuffer);
       totalDecoded += totalRows;
     }
     long elapsed = System.currentTimeMillis() - start;
@@ -67,32 +81,38 @@ public class RleDecodeBench {
     System.out.println("  Lance JNI (Spark): ~1900ms");
   }
 
-  private static long decodeFragment(byte[] buf1, int[] chunkSizes, int[] chunkLogValues,
-      int numChunks, int totalRows, int[] decodeBuffer, boolean[] validityBuffer) {
+  private static long decodeFragment(
+      byte[] buf1,
+      int[] chunkSizes,
+      int[] chunkLogValues,
+      int numChunks,
+      int totalRows,
+      int[] decodeBuffer,
+      boolean[] validityBuffer) {
     long sum = 0;
     int dataOffset = 0;
     int rowsDecoded = 0;
 
     for (int c = 0; c < numChunks; c++) {
       int chunkSize = chunkSizes[c];
-      int numValues = chunkLogValues[c] == 0
-          ? totalRows - rowsDecoded
-          : (1 << chunkLogValues[c]);
+      int numValues = chunkLogValues[c] == 0 ? totalRows - rowsDecoded : (1 << chunkLogValues[c]);
 
       // Parse chunk header
       int defSize = (buf1[dataOffset + 2] & 0xFF) | ((buf1[dataOffset + 3] & 0xFF) << 8);
 
       // Decode validity from RLE def levels
-      LanceRleDecoder.decodeValidity(buf1, dataOffset + 8, defSize,
-          numValues, validityBuffer, 0);
+      LanceRleDecoder.decodeValidity(buf1, dataOffset + 8, defSize, numValues, validityBuffer, 0);
 
       // Skip to value data
       int offset = dataOffset + 8 + defSize;
       offset = (offset + 7) & ~7;
 
       // Read bit_width and decode values
-      int bitWidth = (buf1[offset] & 0xFF) | ((buf1[offset + 1] & 0xFF) << 8)
-          | ((buf1[offset + 2] & 0xFF) << 16) | ((buf1[offset + 3] & 0xFF) << 24);
+      int bitWidth =
+          (buf1[offset] & 0xFF)
+              | ((buf1[offset + 1] & 0xFF) << 8)
+              | ((buf1[offset + 2] & 0xFF) << 16)
+              | ((buf1[offset + 3] & 0xFF) << 24);
       offset += 4;
 
       FastLanesBitpacking.unpack1024(buf1, offset, bitWidth, decodeBuffer, 0);

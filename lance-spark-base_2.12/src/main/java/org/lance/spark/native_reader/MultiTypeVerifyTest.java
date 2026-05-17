@@ -1,3 +1,16 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.lance.spark.native_reader;
 
 import org.apache.hadoop.conf.Configuration;
@@ -7,9 +20,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
 
-/**
- * Verify multi-type, multi-page decode correctness.
- */
+/** Verify multi-type, multi-page decode correctness. */
 public class MultiTypeVerifyTest {
   public static void main(String[] args) throws Exception {
     Configuration conf = new Configuration();
@@ -19,8 +30,9 @@ public class MultiTypeVerifyTest {
     conf.set("fs.s3a.path.style.access", "true");
     conf.set("fs.s3a.connection.ssl.enabled", "false");
 
-    String filePath = "s3a://benchmark/tpcds-sf-100/store_sales.lance/data/"
-        + "10111110011001111000001116c9f243f8b974c6b80dafd4a1.lance";
+    String filePath =
+        "s3a://benchmark/tpcds-sf-100/store_sales.lance/data/"
+            + "10111110011001111000001116c9f243f8b974c6b80dafd4a1.lance";
 
     LanceFileReader reader = LanceFileReader.open(new Path(filePath), conf);
     System.out.println("Footer: " + reader.getFooter());
@@ -40,8 +52,8 @@ public class MultiTypeVerifyTest {
     reader.close();
   }
 
-  private static void testColumn(LanceFileReader reader, int colIdx, int typeWidth,
-      long expectedSum) throws Exception {
+  private static void testColumn(
+      LanceFileReader reader, int colIdx, int typeWidth, long expectedSum) throws Exception {
     List<LanceFileReader.ColumnPageData> pages = reader.readAllColumnPages(colIdx);
     System.out.println("  Pages: " + pages.size());
 
@@ -68,15 +80,15 @@ public class MultiTypeVerifyTest {
       int rowsDecoded = 0;
 
       for (int c = 0; c < numChunks; c++) {
-        int numValues = chunkLogValues[c] == 0
-            ? pageRows - rowsDecoded : (1 << chunkLogValues[c]);
+        int numValues = chunkLogValues[c] == 0 ? pageRows - rowsDecoded : (1 << chunkLogValues[c]);
 
         int numLevels = getU16(page.chunkData, dataOffset);
         int offset;
         if (numLevels > 0) {
           int defSize = getU16(page.chunkData, dataOffset + 2);
-          totalNulls += LanceRleDecoder.decodeValidity(
-              page.chunkData, dataOffset + 8, defSize, numValues, validity, 0);
+          totalNulls +=
+              LanceRleDecoder.decodeValidity(
+                  page.chunkData, dataOffset + 8, defSize, numValues, validity, 0);
           offset = dataOffset + 8 + defSize;
           offset = (offset + 7) & ~7;
         } else {
@@ -88,14 +100,12 @@ public class MultiTypeVerifyTest {
           int bitWidth = getI32(page.chunkData, offset);
           offset += 4;
           FastLanesBitpacking.unpack1024(page.chunkData, offset, bitWidth, intBuf, 0);
-          for (int i = 0; i < numValues; i++)
-            if (validity[i]) sum += intBuf[i];
+          for (int i = 0; i < numValues; i++) if (validity[i]) sum += intBuf[i];
         } else if (typeWidth == 8) {
           int bitWidth = (int) getI64(page.chunkData, offset);
           offset += 8;
           FastLanesBitpacking.unpack1024Long(page.chunkData, offset, bitWidth, longBuf, 0);
-          for (int i = 0; i < numValues; i++)
-            if (validity[i]) sum += longBuf[i];
+          for (int i = 0; i < numValues; i++) if (validity[i]) sum += longBuf[i];
         } else if (typeWidth == 16) {
           for (int i = 0; i < numValues; i++)
             if (validity[i]) sum += getI64(page.chunkData, offset + i * 16);
@@ -115,13 +125,24 @@ public class MultiTypeVerifyTest {
   }
 
   private static int getU16(byte[] b, int o) {
-    return (b[o] & 0xFF) | ((b[o+1] & 0xFF) << 8);
+    return (b[o] & 0xFF) | ((b[o + 1] & 0xFF) << 8);
   }
+
   private static int getI32(byte[] b, int o) {
-    return (b[o]&0xFF)|((b[o+1]&0xFF)<<8)|((b[o+2]&0xFF)<<16)|((b[o+3]&0xFF)<<24);
+    return (b[o] & 0xFF)
+        | ((b[o + 1] & 0xFF) << 8)
+        | ((b[o + 2] & 0xFF) << 16)
+        | ((b[o + 3] & 0xFF) << 24);
   }
+
   private static long getI64(byte[] b, int o) {
-    return (b[o]&0xFFL)|((b[o+1]&0xFFL)<<8)|((b[o+2]&0xFFL)<<16)|((b[o+3]&0xFFL)<<24)
-        |((b[o+4]&0xFFL)<<32)|((b[o+5]&0xFFL)<<40)|((b[o+6]&0xFFL)<<48)|((b[o+7]&0xFFL)<<56);
+    return (b[o] & 0xFFL)
+        | ((b[o + 1] & 0xFFL) << 8)
+        | ((b[o + 2] & 0xFFL) << 16)
+        | ((b[o + 3] & 0xFFL) << 24)
+        | ((b[o + 4] & 0xFFL) << 32)
+        | ((b[o + 5] & 0xFFL) << 40)
+        | ((b[o + 6] & 0xFFL) << 48)
+        | ((b[o + 7] & 0xFFL) << 56);
   }
 }

@@ -29,13 +29,23 @@ public class LanceSplit implements Serializable {
   private static final long serialVersionUID = 2983749283749283749L;
 
   private final List<Integer> fragments;
+  private final List<String> dataFilePaths;
 
   public LanceSplit(List<Integer> fragments) {
+    this(fragments, null);
+  }
+
+  public LanceSplit(List<Integer> fragments, List<String> dataFilePaths) {
     this.fragments = fragments;
+    this.dataFilePaths = dataFilePaths;
   }
 
   public List<Integer> getFragments() {
     return fragments;
+  }
+
+  public List<String> getDataFilePaths() {
+    return dataFilePaths;
   }
 
   /** Result of scan planning containing splits, resolved version, and per-fragment row counts. */
@@ -80,7 +90,12 @@ public class LanceSplit implements Serializable {
       Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());
       for (Fragment fragment : fragments) {
         int id = fragment.getId();
-        splits.add(new LanceSplit(Collections.singletonList(id)));
+        List<org.lance.fragment.DataFile> files = fragment.metadata().getFiles();
+        String dataFilePath = (files != null && !files.isEmpty()) ? files.get(0).getPath() : null;
+        splits.add(
+            new LanceSplit(
+                Collections.singletonList(id),
+                dataFilePath != null ? Collections.singletonList(dataFilePath) : null));
         fragmentRowCounts.put(id, fragment.metadata().getNumRows());
       }
       long resolvedVersion = dataset.getVersion().getId();

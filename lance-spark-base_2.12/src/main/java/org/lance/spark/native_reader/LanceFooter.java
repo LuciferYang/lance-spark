@@ -4,6 +4,12 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
 
@@ -12,8 +18,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Java-native Lance v2 file footer parser.
- * Reads the last 40 bytes of a Lance data file to extract metadata offsets.
+ * Java-native Lance v2 file footer parser. Reads the last 40 bytes of a Lance data file to extract
+ * metadata offsets.
  */
 public class LanceFooter {
   public static final byte[] MAGIC = {'L', 'A', 'N', 'C'};
@@ -27,8 +33,14 @@ public class LanceFooter {
   private final int majorVersion;
   private final int minorVersion;
 
-  private LanceFooter(long columnMeta0Offset, long cmoTableOffset, long gboTableOffset,
-      int numGlobalBuffers, int numColumns, int majorVersion, int minorVersion) {
+  private LanceFooter(
+      long columnMeta0Offset,
+      long cmoTableOffset,
+      long gboTableOffset,
+      int numGlobalBuffers,
+      int numColumns,
+      int majorVersion,
+      int minorVersion) {
     this.columnMeta0Offset = columnMeta0Offset;
     this.cmoTableOffset = cmoTableOffset;
     this.gboTableOffset = gboTableOffset;
@@ -43,8 +55,8 @@ public class LanceFooter {
       throw new IOException("Footer too small: " + footerBytes.length);
     }
     int offset = footerBytes.length - FOOTER_SIZE;
-    ByteBuffer buf = ByteBuffer.wrap(footerBytes, offset, FOOTER_SIZE)
-        .order(ByteOrder.LITTLE_ENDIAN);
+    ByteBuffer buf =
+        ByteBuffer.wrap(footerBytes, offset, FOOTER_SIZE).order(ByteOrder.LITTLE_ENDIAN);
 
     long colMeta0 = buf.getLong();
     long cmoTable = buf.getLong();
@@ -63,18 +75,44 @@ public class LanceFooter {
     return new LanceFooter(colMeta0, cmoTable, gboTable, numGlobal, numCols, major, minor);
   }
 
-  public long getColumnMeta0Offset() { return columnMeta0Offset; }
-  public long getCmoTableOffset() { return cmoTableOffset; }
-  public long getGboTableOffset() { return gboTableOffset; }
-  public int getNumGlobalBuffers() { return numGlobalBuffers; }
-  public int getNumColumns() { return numColumns; }
-  public int getMajorVersion() { return majorVersion; }
-  public int getMinorVersion() { return minorVersion; }
+  public long getColumnMeta0Offset() {
+    return columnMeta0Offset;
+  }
+
+  public long getCmoTableOffset() {
+    return cmoTableOffset;
+  }
+
+  public long getGboTableOffset() {
+    return gboTableOffset;
+  }
+
+  public int getNumGlobalBuffers() {
+    return numGlobalBuffers;
+  }
+
+  public int getNumColumns() {
+    return numColumns;
+  }
+
+  public int getMajorVersion() {
+    return majorVersion;
+  }
+
+  public int getMinorVersion() {
+    return minorVersion;
+  }
 
   @Override
   public String toString() {
-    return String.format("LanceFooter{v%d.%d, columns=%d, globalBufs=%d, colMeta0=%d, cmo=%d, gbo=%d}",
-        majorVersion, minorVersion, numColumns, numGlobalBuffers,
-        columnMeta0Offset, cmoTableOffset, gboTableOffset);
+    return String.format(
+        "LanceFooter{v%d.%d, columns=%d, globalBufs=%d, colMeta0=%d, cmo=%d, gbo=%d}",
+        majorVersion,
+        minorVersion,
+        numColumns,
+        numGlobalBuffers,
+        columnMeta0Offset,
+        cmoTableOffset,
+        gboTableOffset);
   }
 }

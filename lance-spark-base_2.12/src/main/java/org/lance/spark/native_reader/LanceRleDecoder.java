@@ -4,18 +4,21 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
-
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
 /**
  * Decodes RLE-encoded def levels from a Lance miniblock chunk.
  *
- * <p>Format: [values_size: u64][values_raw: u16[]][lengths_raw: u8[]]
- * where values_raw contains the run values and lengths_raw contains run lengths.
- * For simple nullable columns: value 0 = valid, value 1 = null.
+ * <p>Format: [values_size: u64][values_raw: u16[]][lengths_raw: u8[]] where values_raw contains the
+ * run values and lengths_raw contains run lengths. For simple nullable columns: value 0 = valid,
+ * value 1 = null.
  */
 public class LanceRleDecoder {
 
@@ -30,8 +33,13 @@ public class LanceRleDecoder {
    * @param validityOffset offset into validityOut
    * @return number of nulls found
    */
-  public static int decodeValidity(byte[] defData, int defOffset, int defSize,
-      int numValues, boolean[] validityOut, int validityOffset) {
+  public static int decodeValidity(
+      byte[] defData,
+      int defOffset,
+      int defSize,
+      int numValues,
+      boolean[] validityOut,
+      int validityOffset) {
     // [values_size: u64][values_raw: u16[]][lengths_raw: u8[]]
     long valuesSize = getU64LE(defData, defOffset);
     int valuesStart = defOffset + 8;

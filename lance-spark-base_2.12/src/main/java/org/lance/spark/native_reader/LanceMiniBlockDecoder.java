@@ -4,18 +4,23 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
 
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.types.DecimalType;
 
 /**
- * Decodes a miniblock chunk and writes values to an OnHeapColumnVector.
- * Supports int32, int64, float, double, and decimal128 (precision <= 18).
+ * Decodes a miniblock chunk and writes values to an OnHeapColumnVector. Supports int32, int64,
+ * float, double, and decimal128 (precision <= 18).
  */
 public class LanceMiniBlockDecoder {
   private final int[] intBuffer = new int[1024];
@@ -31,17 +36,23 @@ public class LanceMiniBlockDecoder {
    * @param col output column vector
    * @param colOffset row offset in the column vector
    * @param dataType Spark data type
-   * @param typeWidth bytes per value in the raw data (4 for int32/float, 8 for int64/double, 16 for decimal128)
+   * @param typeWidth bytes per value in the raw data (4 for int32/float, 8 for int64/double, 16 for
+   *     decimal128)
    */
-  public void decodeChunk(byte[] chunkData, int dataOffset, int numValues,
-      OnHeapColumnVector col, int colOffset, DataType dataType, int typeWidth) {
+  public void decodeChunk(
+      byte[] chunkData,
+      int dataOffset,
+      int numValues,
+      OnHeapColumnVector col,
+      int colOffset,
+      DataType dataType,
+      int typeWidth) {
     // Parse chunk header: [num_levels: u16][def_size: u16][value_buf_size: u32]
-    int defSize = (chunkData[dataOffset + 2] & 0xFF)
-        | ((chunkData[dataOffset + 3] & 0xFF) << 8);
+    int defSize = (chunkData[dataOffset + 2] & 0xFF) | ((chunkData[dataOffset + 3] & 0xFF) << 8);
 
     // Decode validity
-    LanceRleDecoder.decodeValidity(chunkData, dataOffset + 8, defSize,
-        numValues, validityBuffer, 0);
+    LanceRleDecoder.decodeValidity(
+        chunkData, dataOffset + 8, defSize, numValues, validityBuffer, 0);
 
     // Skip to value data (after header + def data + padding)
     int offset = dataOffset + 8 + defSize;
@@ -50,8 +61,11 @@ public class LanceMiniBlockDecoder {
     // Read bit_width
     int bitWidth;
     if (typeWidth <= 4) {
-      bitWidth = (chunkData[offset] & 0xFF) | ((chunkData[offset + 1] & 0xFF) << 8)
-          | ((chunkData[offset + 2] & 0xFF) << 16) | ((chunkData[offset + 3] & 0xFF) << 24);
+      bitWidth =
+          (chunkData[offset] & 0xFF)
+              | ((chunkData[offset + 1] & 0xFF) << 8)
+              | ((chunkData[offset + 2] & 0xFF) << 16)
+              | ((chunkData[offset + 3] & 0xFF) << 24);
       offset += 4;
     } else {
       // For u64/u128: bit_width header is typeWidth bytes, read as long
@@ -118,9 +132,7 @@ public class LanceMiniBlockDecoder {
     }
   }
 
-  /**
-   * Get the type width in bytes for a given data type.
-   */
+  /** Get the type width in bytes for a given data type. */
   public static int getTypeWidth(DataType dataType) {
     if (dataType == DataTypes.IntegerType || dataType == DataTypes.FloatType) return 4;
     if (dataType == DataTypes.LongType || dataType == DataTypes.DoubleType) return 8;
@@ -128,12 +140,12 @@ public class LanceMiniBlockDecoder {
     return -1; // unsupported
   }
 
-  /**
-   * Check if this data type is supported by the native reader.
-   */
+  /** Check if this data type is supported by the native reader. */
   public static boolean isSupported(DataType dataType) {
-    if (dataType == DataTypes.IntegerType || dataType == DataTypes.LongType
-        || dataType == DataTypes.FloatType || dataType == DataTypes.DoubleType) {
+    if (dataType == DataTypes.IntegerType
+        || dataType == DataTypes.LongType
+        || dataType == DataTypes.FloatType
+        || dataType == DataTypes.DoubleType) {
       return true;
     }
     if (dataType instanceof DecimalType) {

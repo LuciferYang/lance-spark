@@ -4,6 +4,12 @@
  * You may obtain a copy of the License at
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 package org.lance.spark.native_reader;
 
@@ -13,12 +19,9 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
 /**
- * Reads Lance v2 data files using Hadoop FileSystem API.
- * Supports S3, HDFS, local filesystem, etc.
+ * Reads Lance v2 data files using Hadoop FileSystem API. Supports S3, HDFS, local filesystem, etc.
  */
 public class LanceFileReader implements AutoCloseable {
   private final FileSystem fs;
@@ -27,8 +30,8 @@ public class LanceFileReader implements AutoCloseable {
   private final LanceFooter footer;
   private final LanceCmoTable cmoTable;
 
-  private LanceFileReader(FileSystem fs, Path path, long fileSize,
-      LanceFooter footer, LanceCmoTable cmoTable) {
+  private LanceFileReader(
+      FileSystem fs, Path path, long fileSize, LanceFooter footer, LanceCmoTable cmoTable) {
     this.fs = fs;
     this.path = path;
     this.fileSize = fileSize;
@@ -67,17 +70,15 @@ public class LanceFileReader implements AutoCloseable {
   }
 
   /**
-   * Read a column's page data buffers.
-   * Returns the raw bytes for buffer 0 (chunk metadata) and buffer 1 (chunk data).
+   * Read a column's page data buffers. Returns the raw bytes for buffer 0 (chunk metadata) and
+   * buffer 1 (chunk data).
    */
   public ColumnPageData readColumnPage(int columnIndex) throws IOException {
     java.util.List<ColumnPageData> pages = readAllColumnPages(columnIndex);
     return pages.get(0);
   }
 
-  /**
-   * Read ALL pages for a column. Returns a list of ColumnPageData (one per page).
-   */
+  /** Read ALL pages for a column. Returns a list of ColumnPageData (one per page). */
   public java.util.List<ColumnPageData> readAllColumnPages(int columnIndex) throws IOException {
     long colMetaPos = cmoTable.getPosition(columnIndex);
     long colMetaSize = cmoTable.getSize(columnIndex);
@@ -213,7 +214,7 @@ public class LanceFileReader implements AutoCloseable {
 
   public static class ColumnPageData {
     public final byte[] chunkMetadata; // buffer 0
-    public final byte[] chunkData;     // buffer 1
+    public final byte[] chunkData; // buffer 1
     public final long numRows;
 
     public ColumnPageData(byte[] chunkMetadata, byte[] chunkData, long numRows) {

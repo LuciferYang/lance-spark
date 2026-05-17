@@ -1,11 +1,24 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.lance.spark.native_reader;
 
 import java.io.*;
 import java.nio.*;
 
 /**
- * Benchmark: Java FastLanes bitpacking decode performance.
- * Reads the raw miniblock data from a Lance page and decodes all chunks.
+ * Benchmark: Java FastLanes bitpacking decode performance. Reads the raw miniblock data from a
+ * Lance page and decodes all chunks.
  */
 public class FastLanesDecodeBench {
   public static void main(String[] args) throws Exception {
@@ -15,8 +28,14 @@ public class FastLanesDecodeBench {
 
     int numChunks = buf0.length / 4;
     int totalRows = 2000000;
-    System.out.println("Chunks: " + numChunks + ", Value buffer: " + buf1.length
-        + " bytes, Validity: " + validity.length + " bytes");
+    System.out.println(
+        "Chunks: "
+            + numChunks
+            + ", Value buffer: "
+            + buf1.length
+            + " bytes, Validity: "
+            + validity.length
+            + " bytes");
 
     int[] chunkSizes = new int[numChunks];
     int[] chunkLogValues = new int[numChunks];
@@ -38,8 +57,8 @@ public class FastLanesDecodeBench {
     long totalDecoded = 0;
     long start = System.currentTimeMillis();
     for (int iter = 0; iter < iterations; iter++) {
-      totalSum += decodeAndSum(buf1, chunkSizes, chunkLogValues, numChunks, output,
-          totalRows, validity);
+      totalSum +=
+          decodeAndSum(buf1, chunkSizes, chunkLogValues, numChunks, output, totalRows, validity);
       totalDecoded += totalRows;
     }
     long elapsed = System.currentTimeMillis() - start;
@@ -53,34 +72,40 @@ public class FastLanesDecodeBench {
     System.out.println("  Lance JNI (Spark):  ~1900ms / 6.6 ns/row");
   }
 
-  private static long decodeAndSum(byte[] buf1, int[] chunkSizes, int[] chunkLogValues,
-      int numChunks, int[] output, int totalRows, byte[] validity) {
+  private static long decodeAndSum(
+      byte[] buf1,
+      int[] chunkSizes,
+      int[] chunkLogValues,
+      int numChunks,
+      int[] output,
+      int totalRows,
+      byte[] validity) {
     long sum = 0;
     int dataOffset = 0;
     int rowsDecoded = 0;
 
     for (int c = 0; c < numChunks; c++) {
       int chunkSize = chunkSizes[c];
-      int numValues = chunkLogValues[c] == 0
-          ? totalRows - rowsDecoded
-          : (1 << chunkLogValues[c]);
+      int numValues = chunkLogValues[c] == 0 ? totalRows - rowsDecoded : (1 << chunkLogValues[c]);
 
       // Parse chunk header
       int defSize = (buf1[dataOffset + 2] & 0xFF) | ((buf1[dataOffset + 3] & 0xFF) << 8);
-      int valueBufSize = (buf1[dataOffset + 4] & 0xFF)
-          | ((buf1[dataOffset + 5] & 0xFF) << 8)
-          | ((buf1[dataOffset + 6] & 0xFF) << 16)
-          | ((buf1[dataOffset + 7] & 0xFF) << 24);
+      int valueBufSize =
+          (buf1[dataOffset + 4] & 0xFF)
+              | ((buf1[dataOffset + 5] & 0xFF) << 8)
+              | ((buf1[dataOffset + 6] & 0xFF) << 16)
+              | ((buf1[dataOffset + 7] & 0xFF) << 24);
 
       // Skip to value data
       int offset = dataOffset + 8 + defSize;
       offset = (offset + 7) & ~7;
 
       // Read bit_width
-      int bitWidth = (buf1[offset] & 0xFF)
-          | ((buf1[offset + 1] & 0xFF) << 8)
-          | ((buf1[offset + 2] & 0xFF) << 16)
-          | ((buf1[offset + 3] & 0xFF) << 24);
+      int bitWidth =
+          (buf1[offset] & 0xFF)
+              | ((buf1[offset + 1] & 0xFF) << 8)
+              | ((buf1[offset + 2] & 0xFF) << 16)
+              | ((buf1[offset + 3] & 0xFF) << 24);
       offset += 4;
 
       // Decode

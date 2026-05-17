@@ -1,3 +1,16 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.lance.spark.native_reader;
 
 import org.apache.hadoop.conf.Configuration;
@@ -7,8 +20,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * End-to-end test: read Lance file from S3, decode with Java-native reader,
- * verify correctness and measure performance.
+ * End-to-end test: read Lance file from S3, decode with Java-native reader, verify correctness and
+ * measure performance.
  */
 public class NativeReaderE2ETest {
   public static void main(String[] args) throws Exception {
@@ -20,8 +33,9 @@ public class NativeReaderE2ETest {
     conf.set("fs.s3a.connection.ssl.enabled", "false");
 
     // Fragment 0 data file
-    String filePath = "s3a://benchmark/tpcds-sf-100/store_sales.lance/data/"
-        + "10111110011001111000001116c9f243f8b974c6b80dafd4a1.lance";
+    String filePath =
+        "s3a://benchmark/tpcds-sf-100/store_sales.lance/data/"
+            + "10111110011001111000001116c9f243f8b974c6b80dafd4a1.lance";
 
     System.out.println("Opening: " + filePath);
     LanceFileReader reader = LanceFileReader.open(new Path(filePath), conf);
@@ -54,25 +68,26 @@ public class NativeReaderE2ETest {
     int totalRows = (int) pageData.numRows;
 
     for (int c = 0; c < numChunks; c++) {
-      int numValues = chunkLogValues[c] == 0
-          ? totalRows - rowsDecoded
-          : (1 << chunkLogValues[c]);
+      int numValues = chunkLogValues[c] == 0 ? totalRows - rowsDecoded : (1 << chunkLogValues[c]);
 
-      int defSize = (pageData.chunkData[dataOffset + 2] & 0xFF)
-          | ((pageData.chunkData[dataOffset + 3] & 0xFF) << 8);
+      int defSize =
+          (pageData.chunkData[dataOffset + 2] & 0xFF)
+              | ((pageData.chunkData[dataOffset + 3] & 0xFF) << 8);
 
       // Decode validity
-      int nulls = LanceRleDecoder.decodeValidity(
-          pageData.chunkData, dataOffset + 8, defSize, numValues, validityBuffer, 0);
+      int nulls =
+          LanceRleDecoder.decodeValidity(
+              pageData.chunkData, dataOffset + 8, defSize, numValues, validityBuffer, 0);
       totalNulls += nulls;
 
       // Decode values
       int offset = dataOffset + 8 + defSize;
       offset = (offset + 7) & ~7;
-      int bitWidth = (pageData.chunkData[offset] & 0xFF)
-          | ((pageData.chunkData[offset + 1] & 0xFF) << 8)
-          | ((pageData.chunkData[offset + 2] & 0xFF) << 16)
-          | ((pageData.chunkData[offset + 3] & 0xFF) << 24);
+      int bitWidth =
+          (pageData.chunkData[offset] & 0xFF)
+              | ((pageData.chunkData[offset + 1] & 0xFF) << 8)
+              | ((pageData.chunkData[offset + 2] & 0xFF) << 16)
+              | ((pageData.chunkData[offset + 3] & 0xFF) << 24);
       offset += 4;
 
       FastLanesBitpacking.unpack1024(pageData.chunkData, offset, bitWidth, decodeBuffer, 0);

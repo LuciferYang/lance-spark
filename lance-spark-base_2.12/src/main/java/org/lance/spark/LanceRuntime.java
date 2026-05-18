@@ -13,6 +13,8 @@
  */
 package org.lance.spark;
 
+import org.lance.Dataset;
+import org.lance.ReadOptions;
 import org.lance.Session;
 import org.lance.namespace.LanceNamespace;
 
@@ -68,6 +70,9 @@ public final class LanceRuntime {
   /** Per-catalog sessions for cache isolation (lazy initialized). */
   private static final Map<String, Session> CATALOG_SESSIONS = new ConcurrentHashMap<>();
 
+  /** Per-(uri,version) dataset cache for executor-side reuse. */
+  private static final Map<String, Dataset> DATASET_CACHE = new ConcurrentHashMap<>();
+
   /** External namespace implementation aliases used by Spark catalog configuration. */
   private static final Map<String, String> EXTERNAL_NAMESPACE_IMPLS =
       createExternalNamespaceImpls();
@@ -77,6 +82,44 @@ public final class LanceRuntime {
       createUseNamespaceOnWorkers();
 
   private LanceRuntime() {}
+
+  /**
+   * Returns a cached dataset for the given URI and version, opening it if not already cached. All
+   * tasks on the same executor sharing the same (uri, version) will reuse one Dataset instance.
+   */
+  public static Dataset getOrOpenDataset(
+      String uri, Long version, Map<String, String> storageOptions, String catalogName) {
+    String key = uri + "@" + (version != null ? version : "latest");
+    return DATASET_CACHE.computeIfAbsent(
+        key,
+        k -> {
+          ReadOptions.Builder roBuilder =
+              new ReadOptions.Builder()
+                  .setStorageOptions(
+                      storageOptions != null ? storageOptions : Collections.emptyMap())
+                  .setSession(
+                      catalogName != null
+                          ? LanceRuntime.session(catalogName)
+                          : LanceRuntime.session());
+          if (version != null) {
+            roBuilder.setVersion(version);
+          }
+          return Dataset.open()
+              .allocator(allocator())
+              .uri(uri)
+              .readOptions(roBuilder.build())
+              .build();
+        });
+  }
+
+  /** Removes a dataset from the cache (e.g. when version changes). */
+  public static void evictDataset(String uri, Long version) {
+    String key = uri + "@" + (version != null ? version : "latest");
+    Dataset removed = DATASET_CACHE.remove(key);
+    if (removed != null) {
+      removed.close();
+    }
+  }
 
   private static Map<String, String> createExternalNamespaceImpls() {
     Map<String, String> impls = new HashMap<>();

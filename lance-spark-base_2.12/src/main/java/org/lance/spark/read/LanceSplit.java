@@ -30,14 +30,21 @@ public class LanceSplit implements Serializable {
 
   private final List<Integer> fragments;
   private final List<String> dataFilePaths;
+  private final List<String> datasetFieldNames;
 
   public LanceSplit(List<Integer> fragments) {
-    this(fragments, null);
+    this(fragments, null, null);
   }
 
   public LanceSplit(List<Integer> fragments, List<String> dataFilePaths) {
+    this(fragments, dataFilePaths, null);
+  }
+
+  public LanceSplit(
+      List<Integer> fragments, List<String> dataFilePaths, List<String> datasetFieldNames) {
     this.fragments = fragments;
     this.dataFilePaths = dataFilePaths;
+    this.datasetFieldNames = datasetFieldNames;
   }
 
   public List<Integer> getFragments() {
@@ -46,6 +53,10 @@ public class LanceSplit implements Serializable {
 
   public List<String> getDataFilePaths() {
     return dataFilePaths;
+  }
+
+  public List<String> getDatasetFieldNames() {
+    return datasetFieldNames;
   }
 
   /** Result of scan planning containing splits, resolved version, and per-fragment row counts. */
@@ -88,6 +99,13 @@ public class LanceSplit implements Serializable {
       List<Fragment> fragments = dataset.getFragments();
       List<LanceSplit> splits = new ArrayList<>(fragments.size());
       Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());
+
+      // Extract dataset field names for column index mapping in native reader
+      List<String> datasetFieldNames = new ArrayList<>();
+      for (org.apache.arrow.vector.types.pojo.Field field : dataset.getSchema().getFields()) {
+        datasetFieldNames.add(field.getName());
+      }
+
       for (Fragment fragment : fragments) {
         int id = fragment.getId();
         List<org.lance.fragment.DataFile> files = fragment.metadata().getFiles();
@@ -95,7 +113,8 @@ public class LanceSplit implements Serializable {
         splits.add(
             new LanceSplit(
                 Collections.singletonList(id),
-                dataFilePath != null ? Collections.singletonList(dataFilePath) : null));
+                dataFilePath != null ? Collections.singletonList(dataFilePath) : null,
+                datasetFieldNames));
         fragmentRowCounts.put(id, fragment.metadata().getNumRows());
       }
       long resolvedVersion = dataset.getVersion().getId();

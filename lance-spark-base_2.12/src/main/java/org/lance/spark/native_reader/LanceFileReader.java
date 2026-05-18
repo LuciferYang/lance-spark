@@ -30,35 +30,40 @@ public class LanceFileReader implements AutoCloseable {
   private final LanceFooter footer;
   private final LanceCmoTable cmoTable;
 
+  private final FSDataInputStream sharedStream;
+
   private LanceFileReader(
-      FileSystem fs, Path path, long fileSize, LanceFooter footer, LanceCmoTable cmoTable) {
+      FileSystem fs,
+      Path path,
+      long fileSize,
+      LanceFooter footer,
+      LanceCmoTable cmoTable,
+      FSDataInputStream sharedStream) {
     this.fs = fs;
     this.path = path;
     this.fileSize = fileSize;
     this.footer = footer;
     this.cmoTable = cmoTable;
+    this.sharedStream = sharedStream;
   }
 
   public static LanceFileReader open(Path path, Configuration conf) throws IOException {
     FileSystem fs = path.getFileSystem(conf);
     long fileSize = fs.getFileStatus(path).getLen();
+    FSDataInputStream in = fs.open(path);
 
     // Read footer (last 40 bytes)
     byte[] footerBytes = new byte[LanceFooter.FOOTER_SIZE];
-    try (FSDataInputStream in = fs.open(path)) {
-      in.readFully(fileSize - LanceFooter.FOOTER_SIZE, footerBytes);
-    }
+    in.readFully(fileSize - LanceFooter.FOOTER_SIZE, footerBytes);
     LanceFooter footer = LanceFooter.parse(footerBytes);
 
     // Read CMO table
     int cmoSize = footer.getNumColumns() * 16;
     byte[] cmoBytes = new byte[cmoSize];
-    try (FSDataInputStream in = fs.open(path)) {
-      in.readFully(footer.getCmoTableOffset(), cmoBytes);
-    }
+    in.readFully(footer.getCmoTableOffset(), cmoBytes);
     LanceCmoTable cmoTable = LanceCmoTable.parse(cmoBytes, footer.getNumColumns());
 
-    return new LanceFileReader(fs, path, fileSize, footer, cmoTable);
+    return new LanceFileReader(fs, path, fileSize, footer, cmoTable, in);
   }
 
   public LanceFooter getFooter() {
@@ -84,21 +89,17 @@ public class LanceFileReader implements AutoCloseable {
     long colMetaSize = cmoTable.getSize(columnIndex);
 
     byte[] colMeta = new byte[(int) colMetaSize];
-    try (FSDataInputStream in = fs.open(path)) {
-      in.readFully(colMetaPos, colMeta);
-    }
+    sharedStream.readFully(colMetaPos, colMeta);
 
     java.util.List<PageInfo> pageInfos = parseAllPages(colMeta);
     java.util.List<ColumnPageData> result = new java.util.ArrayList<>(pageInfos.size());
 
-    try (FSDataInputStream in = fs.open(path)) {
-      for (PageInfo pageInfo : pageInfos) {
-        byte[] buf0 = new byte[(int) pageInfo.bufferSizes[0]];
-        byte[] buf1 = new byte[(int) pageInfo.bufferSizes[1]];
-        in.readFully(pageInfo.bufferOffsets[0], buf0);
-        in.readFully(pageInfo.bufferOffsets[1], buf1);
-        result.add(new ColumnPageData(buf0, buf1, pageInfo.numRows));
-      }
+    for (PageInfo pageInfo : pageInfos) {
+      byte[] buf0 = new byte[(int) pageInfo.bufferSizes[0]];
+      byte[] buf1 = new byte[(int) pageInfo.bufferSizes[1]];
+      sharedStream.readFully(pageInfo.bufferOffsets[0], buf0);
+      sharedStream.readFully(pageInfo.bufferOffsets[1], buf1);
+      result.add(new ColumnPageData(buf0, buf1, pageInfo.numRows));
     }
     return result;
   }
@@ -209,7 +210,7 @@ public class LanceFileReader implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
-    // FileSystem is shared, don't close it
+    sharedStream.close();
   }
 
   public static class ColumnPageData {

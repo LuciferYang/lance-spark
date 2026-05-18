@@ -24,6 +24,7 @@ import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.IOException;
+import java.util.List;
 
 public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBatch> {
   private final LanceInputPartition inputPartition;
@@ -37,7 +38,7 @@ public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBat
   public LanceColumnarPartitionReader(LanceInputPartition inputPartition) {
     this.inputPartition = inputPartition;
     this.fragmentIndex = 0;
-    this.useNativeReader = shouldUseNativeReader(inputPartition);
+    this.useNativeReader = false; // JNI baseline for investigation
   }
 
   @Override
@@ -50,10 +51,9 @@ public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBat
 
   private boolean nextNative() throws IOException {
     if (nativeReader == null) {
-      // Initialize native reader for current fragment
       LanceSplit split = inputPartition.getLanceSplit();
       if (split.getDataFilePaths() == null || split.getDataFilePaths().isEmpty()) {
-        return nextJni(); // fallback
+        throw new IOException("[NativeReader] No dataFilePaths! fragments=" + split.getFragments());
       }
       String dataFilePath = buildFullDataFilePath(split.getDataFilePaths().get(0));
       int[] colIndices = getColumnIndices();
@@ -137,17 +137,34 @@ public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBat
   }
 
   private static boolean shouldUseNativeReader(LanceInputPartition partition) {
-    // Use native reader when all projected columns are supported types
-    if (partition.getReadOptions().isUseNativeReader()) {
-      for (StructField field : partition.getSchema().fields()) {
-        if (!LanceMiniBlockDecoder.isSupported(field.dataType())) {
-          return false;
-        }
-      }
-      return partition.getLanceSplit().getDataFilePaths() != null
-          && !partition.getLanceSplit().getDataFilePaths().isEmpty();
+    boolean flagEnabled = partition.getReadOptions().isUseNativeReader();
+    if (!flagEnabled) {
+      System.err.println("[NativeReader] DISABLED: use_native_reader flag is false");
+      return false;
     }
-    return false;
+    for (StructField field : partition.getSchema().fields()) {
+      if (!LanceMiniBlockDecoder.isSupported(field.dataType())) {
+        System.err.println(
+            "[NativeReader] DISABLED: unsupported type "
+                + field.dataType()
+                + " for field "
+                + field.name());
+        return false;
+      }
+    }
+    boolean hasDataFiles =
+        partition.getLanceSplit().getDataFilePaths() != null
+            && !partition.getLanceSplit().getDataFilePaths().isEmpty();
+    if (!hasDataFiles) {
+      System.err.println(
+          "[NativeReader] DISABLED: no dataFilePaths in split. fragments="
+              + partition.getLanceSplit().getFragments());
+    } else {
+      System.err.println(
+          "[NativeReader] ENABLED: dataFile="
+              + partition.getLanceSplit().getDataFilePaths().get(0));
+    }
+    return hasDataFiles;
   }
 
   private String buildFullDataFilePath(String relativeDataFilePath) {
@@ -159,11 +176,19 @@ public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBat
   }
 
   private int[] getColumnIndices() {
-    // For now, use sequential indices matching the schema
     StructField[] fields = inputPartition.getSchema().fields();
     int[] indices = new int[fields.length];
-    for (int i = 0; i < fields.length; i++) {
-      indices[i] = i; // TODO: map schema field to actual column index in data file
+    List<String> datasetFieldNames = inputPartition.getLanceSplit().getDatasetFieldNames();
+    if (datasetFieldNames != null && !datasetFieldNames.isEmpty()) {
+      for (int i = 0; i < fields.length; i++) {
+        String name = fields[i].name();
+        int idx = datasetFieldNames.indexOf(name);
+        indices[i] = idx >= 0 ? idx : i;
+      }
+    } else {
+      for (int i = 0; i < fields.length; i++) {
+        indices[i] = i;
+      }
     }
     return indices;
   }

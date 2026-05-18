@@ -21,7 +21,6 @@ import org.lance.spark.LanceConstant;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.read.LanceInputPartition;
-import org.lance.spark.utils.Utils;
 
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.spark.sql.types.StructField;
@@ -30,6 +29,7 @@ import org.apache.spark.sql.types.StructType;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 public class LanceFragmentScanner implements AutoCloseable {
@@ -84,10 +84,18 @@ public class LanceFragmentScanner implements AutoCloseable {
         }
       }
       long dsOpenStart = System.nanoTime();
+      Map<String, String> mergedOpts =
+          LanceRuntime.mergeStorageOptions(
+              readOptions.getStorageOptions() != null
+                  ? readOptions.getStorageOptions()
+                  : java.util.Collections.emptyMap(),
+              inputPartition.getInitialStorageOptions());
       dataset =
-          Utils.openDatasetBuilder(readOptions)
-              .initialStorageOptions(inputPartition.getInitialStorageOptions())
-              .build();
+          LanceRuntime.getOrOpenDataset(
+              readOptions.getDatasetUri(),
+              readOptions.getVersion() != null ? readOptions.getVersion().longValue() : null,
+              mergedOpts,
+              readOptions.getCatalogName());
       long dsOpenTimeNs = System.nanoTime() - dsOpenStart;
       Fragment fragment = dataset.getFragment(fragmentId);
       if (fragment == null) {
@@ -152,13 +160,7 @@ public class LanceFragmentScanner implements AutoCloseable {
           throwable.addSuppressed(closeError);
         }
       }
-      if (dataset != null) {
-        try {
-          dataset.close();
-        } catch (Throwable closeError) {
-          throwable.addSuppressed(closeError);
-        }
-      }
+      // Dataset is shared via cache — do not close here.
       throw new RuntimeException(throwable);
     }
   }
@@ -180,17 +182,7 @@ public class LanceFragmentScanner implements AutoCloseable {
         primary = t;
       }
     }
-    if (dataset != null) {
-      try {
-        dataset.close();
-      } catch (Throwable t) {
-        if (primary != null) {
-          primary.addSuppressed(t);
-        } else {
-          primary = t;
-        }
-      }
-    }
+    // Dataset is shared via LanceRuntime.DATASET_CACHE — do not close here.
     if (primary != null) {
       if (primary instanceof IOException) {
         throw (IOException) primary;

@@ -13,11 +13,11 @@
     <description>JMH micro-benchmarks comparing Lance vs Parquet data source read performance for OLAP scenarios</description>
 
     <properties>
-        <spark.version>3.5.5</spark.version>
-        <scala.compat.version>2.12</scala.compat.version>
-        <lance.spark.version>0.4.0-beta.4</lance.spark.version>
+        <spark.version>4.0.2</spark.version>
+        <scala.compat.version>2.13</scala.compat.version>
+        <lance.spark.version>0.5.0-SNAPSHOT</lance.spark.version>
         <jmh.version>1.37</jmh.version>
-        <java.release>11</java.release>
+        <java.release>17</java.release>
         <maven.compiler.release>${java.release}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <!-- JMH run configuration (override via -D) -->
@@ -58,18 +58,16 @@
         <!-- Lance Spark bundle (includes lance-core, arrow bindings, connector) -->
         <dependency>
             <groupId>org.lance</groupId>
-            <artifactId>lance-spark-bundle-3.5_${scala.compat.version}</artifactId>
+            <artifactId>lance-spark-bundle-4.0_${scala.compat.version}</artifactId>
             <version>${lance.spark.version}</version>
         </dependency>
 
-        <!-- Hadoop AWS for S3A filesystem (MinIO latency simulation).
-             Version must match the hadoop-client used by Spark 3.5.5 (3.3.4) — newer
-             hadoop-aws jars reference classes (e.g. PrefetchingStatistics) missing in
-             the older hadoop-common shipped with Spark. -->
+        <!-- Hadoop AWS for S3A filesystem.
+             Spark 4.0 ships with Hadoop 3.4.1 which supports vectorized read API. -->
         <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-aws</artifactId>
-            <version>3.3.4</version>
+            <version>3.4.1</version>
         </dependency>
     </dependencies>
 

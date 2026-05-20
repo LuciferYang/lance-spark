@@ -55,12 +55,34 @@ object LanceArrowUtils {
   val LANCE_MAP_KEY_METADATA_KEY = "_lance.key"
   val LANCE_MAP_VALUE_METADATA_KEY = "_lance.value"
 
+  // Lance-Spark convention: UDT class FQN on the Arrow field's user metadata. Write stamps it
+  // from udt.getClass.getName; read consumes it to rewrap the field's dataType. Spark's own
+  // sources don't use this key — Parquet round-trips UDT info via a file-level serialized
+  // schema (ParquetReadSupport.SPARK_METADATA_KEY) instead.
+  val LANCE_UDT_CLASS_KEY = "__udt"
+
   private val LANCE_INTERNAL_METADATA_KEYS = Set(
     LANCE_ELEMENT_METADATA_KEY,
     LANCE_MAP_KEY_METADATA_KEY,
     LANCE_MAP_VALUE_METADATA_KEY)
 
   def fromArrowField(field: Field): DataType = {
+    val baseType = convertArrowFieldType(field)
+    val udtFqn = field.getMetadata.get(LANCE_UDT_CLASS_KEY)
+    if (udtFqn == null) {
+      baseType
+    } else {
+      val udt = loadUdt(udtFqn, field.getName)
+      if (!udt.sqlType.sameType(baseType)) {
+        throw new IllegalStateException(
+          s"UDT '$udtFqn' for field '${field.getName}' has sqlType ${udt.sqlType} " +
+            s"which does not match the persisted type $baseType")
+      }
+      udt
+    }
+  }
+
+  private def convertArrowFieldType(field: Field): DataType = {
     field.getType match {
       // Handle unsigned integers by mapping to larger signed types
       // UInt8 -> ShortType (signed 16-bit can hold all UInt8 values 0-255)
@@ -186,8 +208,11 @@ object LanceArrowUtils {
    * `_lance.element`, `_lance.key`, and `_lance.value` so writeback can reconstruct it.
    */
   private[util] def buildFieldMetadata(field: Field): Metadata = {
-    // Start from the Arrow field's user metadata so non-Lance keys (if any) survive.
-    val arrowMeta = Metadata.fromJson(mapper.writeValueAsString(field.getMetadata))
+    // Strip __udt — fromArrowField has already consumed it to rewrap the dataType, so surfacing
+    // it here would be noise. Re-write is safe: toArrowField's UDT branch re-derives the marker
+    // from udt.getClass.getName.
+    val filteredArrowMeta = field.getMetadata.asScala.toMap - LANCE_UDT_CLASS_KEY
+    val arrowMeta = Metadata.fromJson(mapper.writeValueAsString(filteredArrowMeta.asJava))
     val builder = new MetadataBuilder().withMetadata(arrowMeta)
     augmentTypeMarkers(builder, field)
     augmentChildMetadata(builder, field)
@@ -391,7 +416,15 @@ object LanceArrowUtils {
             timeZoneId,
             largeVarTypes = largeVarTypes)).asJava)
       case udt: UserDefinedType[_] =>
-        toArrowField(name, udt.sqlType, nullable, timeZoneId, largeVarTypes = largeVarTypes)
+        // Unwrap to sqlType for storage (Arrow has no UDT concept) but stamp the UDT FQN as a
+        // field-level metadata marker so the read side can rewrap automatically. The incoming
+        // user metadata (if any) is preserved alongside the marker.
+        val baseBuilder = new MetadataBuilder()
+        if (metadata != null) {
+          baseBuilder.withMetadata(metadata)
+        }
+        val udtMeta = baseBuilder.putString(LANCE_UDT_CLASS_KEY, udt.getClass.getName).build()
+        toArrowField(name, udt.sqlType, nullable, timeZoneId, udtMeta, largeVarTypes)
       case DateType if DateMilliUtils.hasDateMilliMetadata(metadata) =>
         val fieldType = new FieldType(
           nullable,
@@ -453,7 +486,10 @@ object LanceArrowUtils {
   private def deduplicateFieldNames(
       dt: DataType,
       errorOnDuplicatedFieldNames: Boolean): DataType = dt match {
-    case udt: UserDefinedType[_] => deduplicateFieldNames(udt.sqlType, errorOnDuplicatedFieldNames)
+    // UDTs have a fixed sqlType defined by the UDT class; recursing here would either be a no-op
+    // or break the UDT contract. Preserving the UDT lets toArrowField's UDT branch stamp __udt
+    // and unwrap at every nesting depth (top-level, inside StructType, ArrayType element, etc.).
+    case udt: UserDefinedType[_] => udt
     case st @ StructType(fields) =>
       val newNames = if (st.names.toSet.size == st.names.length) {
         st.names
@@ -493,6 +529,63 @@ object LanceArrowUtils {
       elementType: DataType): Boolean = {
     // Create a temporary ArrayType to use VectorUtils.shouldBeFixedSizeList
     VectorUtils.shouldBeFixedSizeList(ArrayType(elementType, true), metadata)
+  }
+
+  /**
+   * Reflective UDT instantiation for the read-side rewrap. Two non-obvious choices:
+   *   - Thread context classloader (with this class's loader as fallback) so user-provided UDTs
+   *     shipped via --jars / spark.jars resolve.
+   *   - setAccessible(true) is required for `private[spark]` UDTs like VectorUDT (constructor is
+   *     JVM package-private). On JDK 9+ this can throw InaccessibleObjectException unless the
+   *     spark module is opened — Spark's own --add-opens flags cover that.
+   */
+  private def loadUdt(fqn: String, fieldName: String): UserDefinedType[_] = {
+    val loader = Option(Thread.currentThread().getContextClassLoader)
+      .getOrElse(getClass.getClassLoader)
+    // initialize=false: defer the class's static initializer until we've verified the class is
+    // actually a UserDefinedType. The FQN is read from Lance manifest data; without this guard a
+    // crafted manifest could trigger arbitrary static-init side effects on any class that happens
+    // to be on the reader's classpath. newInstance() below triggers initialization at use time.
+    val cls =
+      try {
+        Class.forName(fqn, false, loader)
+      } catch {
+        case e: ClassNotFoundException =>
+          throw new IllegalStateException(
+            s"UDT class '$fqn' for field '$fieldName' could not be loaded",
+            e)
+      }
+    if (!classOf[UserDefinedType[_]].isAssignableFrom(cls)) {
+      throw new IllegalStateException(
+        s"Class '$fqn' named in '__udt' metadata of field '$fieldName' is not a UserDefinedType")
+    }
+    val ctor =
+      try {
+        cls.getDeclaredConstructor()
+      } catch {
+        case e: NoSuchMethodException =>
+          throw new IllegalStateException(
+            s"UDT class '$fqn' for field '$fieldName' has no no-arg constructor",
+            e)
+      }
+    try {
+      ctor.setAccessible(true)
+    } catch {
+      case e: RuntimeException =>
+        throw new IllegalStateException(
+          s"UDT class '$fqn' for field '$fieldName' could not be made accessible " +
+            "(reflective access denied; check JDK module opens / Java security manager " +
+            "configuration)",
+          e)
+    }
+    try {
+      ctor.newInstance().asInstanceOf[UserDefinedType[_]]
+    } catch {
+      case e: ReflectiveOperationException =>
+        throw new IllegalStateException(
+          s"UDT class '$fqn' for field '$fieldName' could not be instantiated",
+          e)
+    }
   }
 
   /* Copy from copy of org.apache.spark.sql.errors.ExecutionErrors for Spark version compatibility */

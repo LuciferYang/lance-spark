@@ -38,33 +38,57 @@ public class LanceFragmentScanner implements AutoCloseable {
   private final int fragmentId;
   private final boolean withFragemtId;
   private final LanceInputPartition inputPartition;
+  private final long datasetOpenTimeNs;
+  private final long scannerCreateTimeNs;
 
   private LanceFragmentScanner(
       Dataset dataset,
       LanceScanner scanner,
       int fragmentId,
       boolean withFragmentId,
-      LanceInputPartition inputPartition) {
+      LanceInputPartition inputPartition,
+      long datasetOpenTimeNs,
+      long scannerCreateTimeNs) {
     this.dataset = dataset;
     this.scanner = scanner;
     this.fragmentId = fragmentId;
     this.withFragemtId = withFragmentId;
     this.inputPartition = inputPartition;
+    this.datasetOpenTimeNs = datasetOpenTimeNs;
+    this.scannerCreateTimeNs = scannerCreateTimeNs;
   }
 
   public static LanceFragmentScanner create(int fragmentId, LanceInputPartition inputPartition) {
     Dataset dataset = null;
+    LanceScanner lanceScanner = null;
     try {
       LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
-      if (inputPartition.getNamespaceImpl() != null) {
-        readOptions.setNamespace(
-            LanceRuntime.getOrCreateNamespace(
-                inputPartition.getNamespaceImpl(), inputPartition.getNamespaceProperties()));
+      // Optionally rebuild the namespace client on the executor so the dataset open routes through
+      // Utils.OpenDatasetBuilder's namespaceClient branch. This preserves the storage options
+      // provider on the Rust side, which refreshes short-lived vended credentials (e.g. STS
+      // tokens) during long-running scans. The price is an eager describeTable() RPC against the
+      // namespace on every fragment open.
+      //
+      // For catalogs whose backing service authenticates per-call (e.g. Hive Metastore over
+      // Kerberos) executors typically lack a TGT and that RPC fails with "GSS initiate failed".
+      // Setting LanceSparkReadOptions.CONFIG_EXECUTOR_CREDENTIAL_REFRESH=false makes executors
+      // skip the rebuild and open the dataset by URI using the initialStorageOptions the driver
+      // already obtained, at the cost of losing the Rust-side credential refresh callback.
+      if (inputPartition.getNamespaceImpl() != null && readOptions.isExecutorCredentialRefresh()) {
+        if (LanceRuntime.useNamespaceOnWorkers(inputPartition.getNamespaceImpl())) {
+          readOptions.setNamespace(
+              LanceRuntime.getOrCreateNamespace(
+                  inputPartition.getNamespaceImpl(), inputPartition.getNamespaceProperties()));
+        } else {
+          readOptions.setNamespace(null);
+        }
       }
+      long dsOpenStart = System.nanoTime();
       dataset =
           Utils.openDatasetBuilder(readOptions)
               .initialStorageOptions(inputPartition.getInitialStorageOptions())
               .build();
+      long dsOpenTimeNs = System.nanoTime() - dsOpenStart;
       Fragment fragment = dataset.getFragment(fragmentId);
       if (fragment == null) {
         throw new IllegalStateException(
@@ -77,11 +101,13 @@ public class LanceFragmentScanner implements AutoCloseable {
       if (projectedColumns.isEmpty() && inputPartition.getSchema().isEmpty()) {
         // Lance requires at least one projected column. Use _rowid as a lightweight
         // sentinel so the scanner still returns the correct row count (e.g. SELECT 1).
-        // Only do this when the schema is truly empty; when the schema contains virtual
-        // columns (e.g. _fragid, blob position/size) that are not passed to the scanner
-        // but added later by the batch scanner, adding _rowid here would shift column
-        // indices and cause Spark to read wrong data.
         scanOptions.withRowId(true);
+      }
+      if (hasField(inputPartition.getSchema(), LanceConstant.ROW_ID)) {
+        scanOptions.withRowId(true);
+      }
+      if (hasField(inputPartition.getSchema(), LanceConstant.ROW_ADDRESS)) {
+        scanOptions.withRowAddress(true);
       }
       scanOptions.columns(projectedColumns);
       if (inputPartition.getWhereCondition().isPresent()) {
@@ -109,13 +135,25 @@ public class LanceFragmentScanner implements AutoCloseable {
       }
       boolean withFragmentId =
           inputPartition.getSchema().getFieldIndex(LanceConstant.FRAGMENT_ID).nonEmpty();
+      long scanCreateStart = System.nanoTime();
+      lanceScanner = fragment.newScan(scanOptions.build());
+      long scanCreateTimeNs = System.nanoTime() - scanCreateStart;
       return new LanceFragmentScanner(
           dataset,
-          fragment.newScan(scanOptions.build()),
+          lanceScanner,
           fragmentId,
           withFragmentId,
-          inputPartition);
+          inputPartition,
+          dsOpenTimeNs,
+          scanCreateTimeNs);
     } catch (Throwable throwable) {
+      if (lanceScanner != null) {
+        try {
+          lanceScanner.close();
+        } catch (Throwable closeError) {
+          throwable.addSuppressed(closeError);
+        }
+      }
       if (dataset != null) {
         try {
           dataset.close();
@@ -181,11 +219,18 @@ public class LanceFragmentScanner implements AutoCloseable {
     return inputPartition;
   }
 
+  public long getDatasetOpenTimeNs() {
+    return datasetOpenTimeNs;
+  }
+
+  public long getScannerCreateTimeNs() {
+    return scannerCreateTimeNs;
+  }
+
   /**
-   * Builds the projection column list for the scanner. Regular data columns come first, followed by
-   * special metadata columns in the order matching {@link
-   * org.lance.spark.LanceDataset#METADATA_COLUMNS}. All special columns (_rowid, _rowaddr, version
-   * columns) go through scanner.project() for consistent output ordering.
+   * Builds the projection column list for the scanner. Row ID and row address are requested through
+   * explicit scan flags so Lance computes them from the active fragment metadata instead of reading
+   * them as regular columns.
    */
   private static List<String> getColumnNames(StructType schema) {
     // Collect all field names in the schema for quick lookup
@@ -208,14 +253,6 @@ public class LanceFragmentScanner implements AutoCloseable {
                         && !name.endsWith(LanceConstant.BLOB_POSITION_SUFFIX)
                         && !name.endsWith(LanceConstant.BLOB_SIZE_SUFFIX))
             .collect(Collectors.toList());
-
-    // Append special columns in METADATA_COLUMNS order (must match Rust scanner output order)
-    if (schemaFields.contains(LanceConstant.ROW_ID)) {
-      columns.add(LanceConstant.ROW_ID);
-    }
-    if (schemaFields.contains(LanceConstant.ROW_ADDRESS)) {
-      columns.add(LanceConstant.ROW_ADDRESS);
-    }
     if (schemaFields.contains(LanceConstant.ROW_LAST_UPDATED_AT_VERSION)) {
       columns.add(LanceConstant.ROW_LAST_UPDATED_AT_VERSION);
     }
@@ -224,5 +261,14 @@ public class LanceFragmentScanner implements AutoCloseable {
     }
 
     return columns;
+  }
+
+  private static boolean hasField(StructType schema, String name) {
+    for (StructField field : schema.fields()) {
+      if (field.name().equals(name)) {
+        return true;
+      }
+    }
+    return false;
   }
 }

@@ -724,6 +724,25 @@ public abstract class SparkLanceNamespaceTestBase {
   }
 
   @Test
+  public void testAlterStableRowIdsPropertyRejected() throws Exception {
+    String tableName = generateTableName("alter_stable_row_ids");
+    String fullName = catalogName + ".default." + tableName;
+
+    spark.sql("CREATE TABLE " + fullName + " (id BIGINT NOT NULL)");
+
+    Identifier ident = Identifier.of(new String[] {"default"}, tableName);
+    UnsupportedOperationException ex =
+        assertThrows(
+            UnsupportedOperationException.class,
+            () ->
+                catalog.alterTable(
+                    ident,
+                    TableChange.setProperty(
+                        LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS, "true")));
+    assertTrue(ex.getMessage().contains("can only be set at table creation"));
+  }
+
+  @Test
   public void testUnsetTableProperties() throws Exception {
     String tableName = generateTableName("unset_props");
     String fullName = catalogName + ".default." + tableName;

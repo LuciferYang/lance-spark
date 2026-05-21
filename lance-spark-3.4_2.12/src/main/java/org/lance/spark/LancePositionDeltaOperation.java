@@ -44,6 +44,8 @@ public class LancePositionDeltaOperation implements RowLevelOperation, SupportsD
 
   private final Map<String, String> namespaceProperties;
 
+  private final boolean managedVersioning;
+
   private final String fileFormatVersion;
 
   private final Map<String, String> tableProperties;
@@ -55,6 +57,7 @@ public class LancePositionDeltaOperation implements RowLevelOperation, SupportsD
       Map<String, String> initialStorageOptions,
       String namespaceImpl,
       Map<String, String> namespaceProperties,
+      boolean managedVersioning,
       String fileFormatVersion,
       Map<String, String> tableProperties) {
     this.command = command;
@@ -63,6 +66,7 @@ public class LancePositionDeltaOperation implements RowLevelOperation, SupportsD
     this.initialStorageOptions = initialStorageOptions;
     this.namespaceImpl = namespaceImpl;
     this.namespaceProperties = namespaceProperties;
+    this.managedVersioning = managedVersioning;
     this.fileFormatVersion = fileFormatVersion;
     this.tableProperties = tableProperties;
   }
@@ -95,6 +99,13 @@ public class LancePositionDeltaOperation implements RowLevelOperation, SupportsD
     if (fileFormatVersion != null) {
       writeOptionsBuilder.fileFormatVersion(fileFormatVersion);
     }
+    if (tableProperties != null) {
+      String stableRowIds =
+          tableProperties.get(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS);
+      if (stableRowIds != null) {
+        writeOptionsBuilder.enableStableRowIds(Boolean.parseBoolean(stableRowIds));
+      }
+    }
     LanceSparkWriteOptions writeOptions = writeOptionsBuilder.build();
     return new SparkPositionDeltaWriteBuilder(
         sparkSchema,
@@ -102,6 +113,7 @@ public class LancePositionDeltaOperation implements RowLevelOperation, SupportsD
         initialStorageOptions,
         namespaceImpl,
         namespaceProperties,
+        managedVersioning,
         readOptions.getTableId());
   }
 

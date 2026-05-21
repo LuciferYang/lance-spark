@@ -25,6 +25,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.*;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 /**
  * Tests for Change Data Feed (CDF) version tracking columns: _row_created_at_version and
  * _row_last_updated_at_version.
@@ -90,10 +92,11 @@ public abstract class BaseCdfVersionTrackingTest {
     // v3: Update one row
     helper.update("value = value + 10", "id = 1");
 
+    // Native UPDATE preserves actual insert version for _row_created_at_version
     helper.checkWithVersions(
         Arrays.asList(
-            CdfRow.ofWithVersions(1, "Alice", 110, 1L, 3L),
-            CdfRow.ofWithVersions(2, "Bob", 200, 1L, 1L)));
+            CdfRow.ofWithVersions(1, "Alice", 110, 2L, 3L),
+            CdfRow.ofWithVersions(2, "Bob", 200, 2L, 2L)));
   }
 
   @Test
@@ -104,20 +107,20 @@ public abstract class BaseCdfVersionTrackingTest {
     // v2: Initial insert
     helper.insert(Collections.singletonList(CdfRow.of(1, "Alice", 100)));
 
-    // v3: First update
+    // v3: First update — created stays at v2 (original insert)
     helper.update("value = value + 10", "id = 1");
     helper.checkWithVersions(
-        Collections.singletonList(CdfRow.ofWithVersions(1, "Alice", 110, 1L, 3L)));
+        Collections.singletonList(CdfRow.ofWithVersions(1, "Alice", 110, 2L, 3L)));
 
     // v4: Second update on same row
     helper.update("value = value + 10", "id = 1");
     helper.checkWithVersions(
-        Collections.singletonList(CdfRow.ofWithVersions(1, "Alice", 120, 1L, 4L)));
+        Collections.singletonList(CdfRow.ofWithVersions(1, "Alice", 120, 2L, 4L)));
 
     // v5: Third update on same row
     helper.update("value = value + 10", "id = 1");
     helper.checkWithVersions(
-        Collections.singletonList(CdfRow.ofWithVersions(1, "Alice", 130, 1L, 5L)));
+        Collections.singletonList(CdfRow.ofWithVersions(1, "Alice", 130, 2L, 5L)));
   }
 
   @Test
@@ -135,9 +138,9 @@ public abstract class BaseCdfVersionTrackingTest {
 
     helper.checkWithVersions(
         Arrays.asList(
-            CdfRow.ofWithVersions(1, "Alice", 100, 1L, 1L),
-            CdfRow.ofWithVersions(2, "Bob", 201, 1L, 3L),
-            CdfRow.ofWithVersions(3, "Charlie", 301, 1L, 3L)));
+            CdfRow.ofWithVersions(1, "Alice", 100, 2L, 2L),
+            CdfRow.ofWithVersions(2, "Bob", 201, 2L, 3L),
+            CdfRow.ofWithVersions(3, "Charlie", 301, 2L, 3L)));
   }
 
   @Test
@@ -168,13 +171,13 @@ public abstract class BaseCdfVersionTrackingTest {
         Arrays.asList(
             CdfRow.of(1, "Alice", 100), CdfRow.of(2, "Bob", 200), CdfRow.of(3, "Charlie", 300)));
 
-    // v3: Delete one row - remaining rows in the same fragment get version metadata recalculated
+    // v3: Delete one row - remaining rows report their actual insert version (v2)
     helper.delete("id = 2");
 
     helper.checkWithVersions(
         Arrays.asList(
-            CdfRow.ofWithVersions(1, "Alice", 100, 1L, 1L),
-            CdfRow.ofWithVersions(3, "Charlie", 300, 1L, 1L)));
+            CdfRow.ofWithVersions(1, "Alice", 100, 2L, 2L),
+            CdfRow.ofWithVersions(3, "Charlie", 300, 2L, 2L)));
   }
 
   @Test
@@ -200,10 +203,11 @@ public abstract class BaseCdfVersionTrackingTest {
     // v7: Update remaining rows += 1
     helper.update("value = value + 1", "id IN (1, 3)");
 
+    // created tracks actual insert version: Alice at v2, Charlie at v4
     helper.checkWithVersions(
         Arrays.asList(
-            CdfRow.ofWithVersions(1, "Alice", 151, 1L, 7L),
-            CdfRow.ofWithVersions(3, "Charlie", 401, 1L, 7L)));
+            CdfRow.ofWithVersions(1, "Alice", 151, 2L, 7L),
+            CdfRow.ofWithVersions(3, "Charlie", 401, 4L, 7L)));
   }
 
   @Test
@@ -224,8 +228,56 @@ public abstract class BaseCdfVersionTrackingTest {
 
     helper.checkWithVersions(
         Arrays.asList(
-            CdfRow.ofWithVersions(1, "Alice", 200, 1L, 4L),
-            CdfRow.ofWithVersions(3, "Charlie", 600, 1L, 4L)));
+            CdfRow.ofWithVersions(1, "Alice", 200, 2L, 4L),
+            CdfRow.ofWithVersions(3, "Charlie", 600, 2L, 4L)));
+  }
+
+  /**
+   * INSERT OVERWRITE replaces the table contents with a new fragment set. The post-overwrite rows
+   * are new rows (no row-identity continuity with the pre-overwrite rows), so both version columns
+   * must equal the overwrite commit version.
+   */
+  @Test
+  public void testInsertOverwriteResetsBothVersionColumns() {
+    CdfTestHelper helper = new CdfTestHelper(spark, catalogName);
+    helper.create();
+
+    // v2: initial insert
+    helper.insert(
+        Arrays.asList(
+            CdfRow.of(1, "Alice", 100), CdfRow.of(2, "Bob", 200), CdfRow.of(3, "Charlie", 300)));
+
+    // v3: update so pre-overwrite rows have non-trivial last_updated
+    helper.update("value = value + 1", "id = 1");
+
+    // v4: INSERT OVERWRITE — pre-overwrite rows are gone, new rows must show overwrite version on
+    // both version columns.
+    spark.sql(
+        String.format(
+            "INSERT OVERWRITE %s VALUES (10, 'Xavier', 1000), (11, 'Yvonne', 1100)",
+            helper.getTableName()));
+
+    List<CdfRow> after = helper.getAllWithVersions();
+    assertEquals(2, after.size(), "overwrite should leave exactly the new rows");
+
+    Long overwriteVersion = null;
+    for (CdfRow row : after) {
+      assertEquals(
+          row.createdAtVersion,
+          row.lastUpdatedAtVersion,
+          "overwritten row id=" + row.id + " must have created_at == last_updated");
+      if (overwriteVersion == null) {
+        overwriteVersion = row.createdAtVersion;
+      } else {
+        assertEquals(
+            overwriteVersion,
+            row.createdAtVersion,
+            "all overwritten rows must share the same commit version");
+      }
+      org.junit.jupiter.api.Assertions.assertTrue(
+          row.createdAtVersion >= 4L,
+          "overwrite commit must be at or after v4 (got " + row.createdAtVersion + ")");
+    }
   }
 
   @Test

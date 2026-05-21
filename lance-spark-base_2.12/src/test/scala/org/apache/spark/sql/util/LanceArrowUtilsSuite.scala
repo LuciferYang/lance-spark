@@ -23,12 +23,13 @@ package org.apache.spark.sql.util
  * It has been modified by the Lance developers to fit the needs of the Lance project.
  */
 
-import org.apache.arrow.vector.types.DateUnit
-import org.apache.arrow.vector.types.pojo.{Field, FieldType}
+import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision}
+import org.apache.arrow.vector.types.pojo.{Field, FieldType, Schema}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.SparkUnsupportedOperationException
 import org.apache.spark.sql.types._
 import org.lance.spark.LanceConstant
+import org.lance.spark.utils.{Float16Utils, LargeVarCharUtils, VectorUtils}
 import org.scalatest.funsuite.AnyFunSuite
 
 import java.time.ZoneId
@@ -81,6 +82,20 @@ class LanceArrowUtilsSuite extends AnyFunSuite {
     roundtrip(DateType)
     roundtrip(YearMonthIntervalType())
     roundtrip(DayTimeIntervalType())
+  }
+
+  test("decimal256 field throws SparkUnsupportedOperationException") {
+    val field = new Field(
+      "amount",
+      new FieldType(true, new ArrowType.Decimal(38, 5, 256), null, null),
+      java.util.Collections.emptyList())
+    val ex = intercept[SparkUnsupportedOperationException] {
+      LanceArrowUtils.fromArrowField(field)
+    }
+    assert(ex.getMessage.contains("amount"), s"field name missing: ${ex.getMessage}")
+    assert(ex.getMessage.contains("256"), s"bit-width missing: ${ex.getMessage}")
+    assert(ex.getMessage.contains("128"), s"128-bit hint missing: ${ex.getMessage}")
+    assert(ex.getMessage.contains("38"), s"precision limit hint missing: ${ex.getMessage}")
   }
 
   test("timestamp") {
@@ -244,6 +259,39 @@ class LanceArrowUtilsSuite extends AnyFunSuite {
       MapType(StringType, new StructType().add("i_0", IntegerType).add("i_1", StringType)))
   }
 
+  // CharType/VarcharType reach the connector as distinct types when tables are created via
+  // SQL DDL through a V2 catalog (Spark 3.1+ default: charVarcharAsString=false). These unit
+  // tests exercise the conversion functions directly, without requiring SparkSession.
+  test("CharType maps to Arrow Utf8") {
+    val field = LanceArrowUtils.toArrowField("v", CharType(10), nullable = true, "UTC")
+    assert(field.getType === ArrowType.Utf8.INSTANCE)
+  }
+
+  test("VarcharType maps to Arrow Utf8") {
+    val field = LanceArrowUtils.toArrowField("v", VarcharType(50), nullable = true, "UTC")
+    assert(field.getType === ArrowType.Utf8.INSTANCE)
+  }
+
+  test("CharType maps to Arrow LargeUtf8 when largeVarTypes is true") {
+    val field = LanceArrowUtils.toArrowField(
+      "v",
+      CharType(10),
+      nullable = true,
+      "UTC",
+      largeVarTypes = true)
+    assert(field.getType === ArrowType.LargeUtf8.INSTANCE)
+  }
+
+  test("VarcharType maps to Arrow LargeUtf8 when largeVarTypes is true") {
+    val field = LanceArrowUtils.toArrowField(
+      "v",
+      VarcharType(50),
+      nullable = true,
+      "UTC",
+      largeVarTypes = true)
+    assert(field.getType === ArrowType.LargeUtf8.INSTANCE)
+  }
+
   test("large varchar metadata produces LargeUtf8 arrow type") {
     import org.lance.spark.utils.LargeVarCharUtils
 
@@ -266,6 +314,252 @@ class LanceArrowUtilsSuite extends AnyFunSuite {
     // Large string with metadata should use LargeUtf8
     val largeField = arrowSchema.findField("large_string")
     assert(largeField.getType === ArrowType.LargeUtf8.INSTANCE)
+  }
+
+  test("date millisecond metadata preserved in fromArrowSchema") {
+    val dateMilliField = new Field(
+      "dt",
+      new FieldType(true, new ArrowType.Date(DateUnit.MILLISECOND), null, null),
+      java.util.Collections.emptyList())
+    val schema = new Schema(java.util.Arrays.asList(dateMilliField))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(schema)
+    assert(sparkSchema("dt").dataType === DateType)
+    assert(sparkSchema("dt").metadata.contains(LanceArrowUtils.ARROW_DATE_MILLISECOND_KEY))
+    assert(
+      sparkSchema("dt").metadata.getString(
+        LanceArrowUtils.ARROW_DATE_MILLISECOND_KEY) === "true")
+  }
+
+  test("date millisecond metadata produces Date(MILLISECOND) arrow type") {
+    val dayCol = StructField("day_col", DateType, nullable = true)
+    val milliMeta = new MetadataBuilder()
+      .putString(LanceArrowUtils.ARROW_DATE_MILLISECOND_KEY, "true")
+      .build()
+    val milliCol = StructField("milli_col", DateType, nullable = true, milliMeta)
+    val sparkSchema = StructType(Seq(dayCol, milliCol))
+    val arrowSchema = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    assert(arrowSchema.findField("day_col").getType === new ArrowType.Date(DateUnit.DAY))
+    assert(
+      arrowSchema.findField("milli_col").getType === new ArrowType.Date(DateUnit.MILLISECOND))
+  }
+
+  test("date millisecond roundtrip Arrow -> Spark -> Arrow") {
+    val dateMilliField = new Field(
+      "dt",
+      new FieldType(true, new ArrowType.Date(DateUnit.MILLISECOND), null, null),
+      java.util.Collections.emptyList())
+    val arrowSchema = new Schema(java.util.Arrays.asList(dateMilliField))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrowSchema)
+    val arrowSchemaBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    assert(
+      arrowSchemaBack.findField("dt").getType === new ArrowType.Date(DateUnit.MILLISECOND))
+  }
+
+  test("date millisecond metadata preserved in nested struct") {
+    val dateMilliChild = new Field(
+      "nested_dt",
+      new FieldType(true, new ArrowType.Date(DateUnit.MILLISECOND), null, null),
+      java.util.Collections.emptyList())
+    val structField = new Field(
+      "s",
+      new FieldType(true, ArrowType.Struct.INSTANCE, null, null),
+      java.util.Arrays.asList(dateMilliChild))
+    val schema = new Schema(java.util.Arrays.asList(structField))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(schema)
+    val structType = sparkSchema("s").dataType.asInstanceOf[StructType]
+    assert(structType("nested_dt").dataType === DateType)
+    assert(
+      structType("nested_dt").metadata.contains(LanceArrowUtils.ARROW_DATE_MILLISECOND_KEY))
+    assert(
+      structType("nested_dt").metadata.getString(
+        LanceArrowUtils.ARROW_DATE_MILLISECOND_KEY) === "true")
+  }
+
+  // Helpers for building Arrow fields used by the nested-metadata tests below.
+  private def listField(name: String, child: Field): Field = {
+    new Field(
+      name,
+      new FieldType(true, ArrowType.List.INSTANCE, null, null),
+      java.util.Arrays.asList(child))
+  }
+
+  private def fixedSizeListField(name: String, size: Int, child: Field): Field = {
+    new Field(
+      name,
+      new FieldType(true, new ArrowType.FixedSizeList(size), null, null),
+      java.util.Arrays.asList(child))
+  }
+
+  private def mapField(name: String, keyField: Field, valueField: Field): Field = {
+    val entriesField = new Field(
+      "entries",
+      new FieldType(false, ArrowType.Struct.INSTANCE, null, null),
+      java.util.Arrays.asList(keyField, valueField))
+    new Field(
+      name,
+      new FieldType(true, new ArrowType.Map(false), null, null),
+      java.util.Arrays.asList(entriesField))
+  }
+
+  private def primitiveField(
+      name: String,
+      arrowType: ArrowType,
+      nullable: Boolean = true): Field = {
+    new Field(
+      name,
+      new FieldType(nullable, arrowType, null, null),
+      java.util.Collections.emptyList())
+  }
+
+  test("Date(MILLISECOND) inside Array roundtrips to Date(MILLISECOND)") {
+    val arrow = new Schema(java.util.Arrays.asList(listField(
+      "arr",
+      primitiveField("element", new ArrowType.Date(DateUnit.MILLISECOND)))))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    assert(sparkSchema("arr").dataType === ArrayType(DateType, containsNull = true))
+
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val elementType = arrowBack.findField("arr").getChildren.get(0).getType
+    assert(
+      elementType === new ArrowType.Date(DateUnit.MILLISECOND),
+      s"Array element should remain Date(MILLISECOND), got $elementType")
+  }
+
+  test("LargeUtf8 inside Array roundtrips to LargeUtf8") {
+    val arrow = new Schema(java.util.Arrays.asList(listField(
+      "arr",
+      primitiveField("element", ArrowType.LargeUtf8.INSTANCE))))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    assert(sparkSchema("arr").dataType === ArrayType(StringType, containsNull = true))
+
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val elementType = arrowBack.findField("arr").getChildren.get(0).getType
+    assert(
+      elementType === ArrowType.LargeUtf8.INSTANCE,
+      s"Array element should remain LargeUtf8, got $elementType")
+  }
+
+  test("LargeUtf8 inside FixedSizeList roundtrips to LargeUtf8") {
+    val arrow = new Schema(java.util.Arrays.asList(fixedSizeListField(
+      "fsl",
+      3,
+      primitiveField("element", ArrowType.LargeUtf8.INSTANCE))))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    // FixedSizeList<LargeUtf8> is not a Lance vector (element is not numeric), so it
+    // collapses to a regular List on writeback. Element type fidelity is still required.
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val elementType = arrowBack.findField("fsl").getChildren.get(0).getType
+    assert(
+      elementType === ArrowType.LargeUtf8.INSTANCE,
+      s"FixedSizeList element should remain LargeUtf8, got $elementType")
+  }
+
+  test("Date(MILLISECOND) as Map value roundtrips to Date(MILLISECOND)") {
+    val arrow = new Schema(java.util.Arrays.asList(mapField(
+      "m",
+      primitiveField("key", ArrowType.Utf8.INSTANCE, nullable = false),
+      primitiveField("value", new ArrowType.Date(DateUnit.MILLISECOND)))))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    assert(sparkSchema("m").dataType === MapType(StringType, DateType, valueContainsNull = true))
+
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val valueType = arrowBack
+      .findField("m").getChildren.get(0)
+      .getChildren.get(1).getType
+    assert(
+      valueType === new ArrowType.Date(DateUnit.MILLISECOND),
+      s"Map value should remain Date(MILLISECOND), got $valueType")
+  }
+
+  test("LargeUtf8 as Map key and Date(MILLISECOND) as Map value both preserved") {
+    val arrow = new Schema(java.util.Arrays.asList(mapField(
+      "m",
+      primitiveField("key", ArrowType.LargeUtf8.INSTANCE, nullable = false),
+      primitiveField("value", new ArrowType.Date(DateUnit.MILLISECOND)))))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val entries = arrowBack.findField("m").getChildren.get(0).getChildren
+    assert(entries.get(0).getType === ArrowType.LargeUtf8.INSTANCE)
+    assert(entries.get(1).getType === new ArrowType.Date(DateUnit.MILLISECOND))
+  }
+
+  test("nested Array<Array<Date(MILLISECOND)>> roundtrips") {
+    val arrow = new Schema(java.util.Arrays.asList(listField(
+      "outer",
+      listField("element", primitiveField("element", new ArrowType.Date(DateUnit.MILLISECOND))))))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val inner = arrowBack.findField("outer").getChildren.get(0)
+    val innermost = inner.getChildren.get(0)
+    assert(inner.getType === ArrowType.List.INSTANCE)
+    assert(
+      innermost.getType === new ArrowType.Date(DateUnit.MILLISECOND),
+      s"Innermost element should remain Date(MILLISECOND), got ${innermost.getType}")
+  }
+
+  test("FixedSizeList(Float16) nested inside an Array preserves size + float16 markers") {
+    val float16Element = primitiveField(
+      "element",
+      new ArrowType.FloatingPoint(FloatingPointPrecision.HALF))
+    val arrow = new Schema(java.util.Arrays.asList(listField(
+      "vectors",
+      fixedSizeListField("element", 4, float16Element))))
+
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    // Read side: outer ArrayType must carry the inner FixedSizeList's metadata
+    // (size + float16 marker) under the namespaced _lance.element key, so writeback
+    // can restore it on Spark 4.0+ runtimes that support Float2Vector.
+    val outerMeta = sparkSchema("vectors").metadata
+    assert(outerMeta.contains(LanceArrowUtils.LANCE_ELEMENT_METADATA_KEY))
+    val elementMeta = org.apache.spark.sql.types.Metadata.fromJson(
+      outerMeta.getString(LanceArrowUtils.LANCE_ELEMENT_METADATA_KEY))
+    assert(elementMeta.contains(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY))
+    assert(elementMeta.getLong(VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY) === 4L)
+    assert(elementMeta.contains(Float16Utils.ARROW_FLOAT16_KEY))
+    assert(elementMeta.getString(Float16Utils.ARROW_FLOAT16_KEY) === "true")
+
+    // Write side only runs on Arrow 18+ (Spark 4.0+). On older Arrow versions
+    // toArrowSchema rightly refuses to materialize a Float16 vector.
+    if (Float16Utils.isFloat2VectorAvailable) {
+      val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+      val inner = arrowBack.findField("vectors").getChildren.get(0)
+      assert(inner.getType.isInstanceOf[ArrowType.FixedSizeList])
+      assert(inner.getType.asInstanceOf[ArrowType.FixedSizeList].getListSize === 4)
+      assert(Float16Utils.isFloat16ArrowField(inner))
+    }
+  }
+
+  test("Array<Date(MILLISECOND)> nested inside a Struct roundtrips") {
+    val dateInArray = listField(
+      "arr",
+      primitiveField("element", new ArrowType.Date(DateUnit.MILLISECOND)))
+    val structField = new Field(
+      "s",
+      new FieldType(true, ArrowType.Struct.INSTANCE, null, null),
+      java.util.Arrays.asList(dateInArray))
+    val arrow = new Schema(java.util.Arrays.asList(structField))
+
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val innerArr = arrowBack.findField("s").getChildren.get(0)
+    val element = innerArr.getChildren.get(0)
+    assert(
+      element.getType === new ArrowType.Date(DateUnit.MILLISECOND),
+      s"Struct->Array element should remain Date(MILLISECOND), got ${element.getType}")
+  }
+
+  test("LargeUtf8 inside a Struct field preserves LargeUtf8 marker on writeback") {
+    val struct = new Field(
+      "s",
+      new FieldType(true, ArrowType.Struct.INSTANCE, null, null),
+      java.util.Arrays.asList(primitiveField("name", ArrowType.LargeUtf8.INSTANCE)))
+    val arrow = new Schema(java.util.Arrays.asList(struct))
+    val sparkSchema = LanceArrowUtils.fromArrowSchema(arrow)
+    val arrowBack = LanceArrowUtils.toArrowSchema(sparkSchema, "UTC", false)
+    val nameType = arrowBack.findField("s").getChildren.get(0).getType
+    assert(
+      nameType === ArrowType.LargeUtf8.INSTANCE,
+      s"Struct child should remain LargeUtf8, got $nameType")
   }
 
   test("Arrow Time types map to TimeType or LongType") {

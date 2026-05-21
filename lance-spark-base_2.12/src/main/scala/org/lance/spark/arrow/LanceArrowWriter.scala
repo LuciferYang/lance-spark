@@ -88,9 +88,17 @@ object LanceArrowWriter {
         new DecimalWriter(vector, dt.precision, dt.scale)
       case (StringType, vector: VarCharVector) => new StringWriter(vector)
       case (StringType, vector: LargeVarCharVector) => new LargeStringWriter(vector)
+      // The (StringType, ...) matches above compare the value against the StringType case
+      // object via equals(). CharType/VarcharType never match: on Spark 3.4/3.5 they extend
+      // AtomicType (different hierarchy); on 4.0+ they extend StringType but carry a different
+      // constraint (FixedLength/MaxLength vs NoConstraint). Handle explicitly.
+      case (_: CharType | _: VarcharType, vector: VarCharVector) => new StringWriter(vector)
+      case (_: CharType | _: VarcharType, vector: LargeVarCharVector) =>
+        new LargeStringWriter(vector)
       case (BinaryType, vector: VarBinaryVector) => new BinaryWriter(vector)
       case (BinaryType, vector: LargeVarBinaryVector) => new LargeBinaryWriter(vector)
       case (DateType, vector: DateDayVector) => new DateWriter(vector)
+      case (DateType, vector: DateMilliVector) => new DateMilliWriter(vector)
       case (TimestampType, vector: TimeStampMicroTZVector) => new TimestampWriter(vector)
       case (TimestampNTZType, vector: TimeStampMicroVector) => new TimestampNTZWriter(vector)
       case (MapType(_, _, _), vector: MapVector) =>
@@ -118,6 +126,8 @@ object LanceArrowWriter {
       case (dt, vector: TimeNanoVector)
           if dt.getClass.getName == "org.apache.spark.sql.types.TimeType" =>
         new TimeNanoWriter(vector)
+      case (udt: UserDefinedType[_], _) =>
+        createFieldWriter(vector, udt.sqlType, metadata)
       case (dt, _) =>
         throw new UnsupportedOperationException(s"Unsupported data type: $dt")
     }
@@ -328,6 +338,15 @@ private[arrow] class DateWriter(val valueVector: DateDayVector) extends LanceArr
   override def setNull(): Unit = {}
   override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
     valueVector.setSafe(count, input.getInt(ordinal))
+  }
+}
+
+private[arrow] class DateMilliWriter(val valueVector: DateMilliVector)
+  extends LanceArrowFieldWriter {
+  private val MILLIS_PER_DAY = 86400000L
+  override def setNull(): Unit = {}
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.setSafe(count, input.getInt(ordinal).toLong * MILLIS_PER_DAY)
   }
 }
 

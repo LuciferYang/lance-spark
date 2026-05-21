@@ -32,15 +32,16 @@ import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.apache.spark.sql.vectorized.ColumnarMap;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
   private final LanceFragmentScanner fragmentScanner;
   private final ArrowReader arrowReader;
   private ColumnarBatch currentColumnarBatch;
+  private long lastBatchLoadTimeNs;
 
   public LanceFragmentColumnarBatchScanner(
       LanceFragmentScanner fragmentScanner, ArrowReader arrowReader) {
@@ -55,22 +56,15 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
   }
 
   public boolean loadNextBatch() throws IOException {
-    if (arrowReader.loadNextBatch()) {
+    long start = System.nanoTime();
+    boolean hasNext = arrowReader.loadNextBatch();
+    lastBatchLoadTimeNs = System.nanoTime() - start;
+
+    if (hasNext) {
       VectorSchemaRoot root = arrowReader.getVectorSchemaRoot();
+
       List<ColumnVector> fieldVectors =
-          root.getFieldVectors().stream()
-              .map(LanceArrowColumnVector::new)
-              .collect(Collectors.toList());
-
-      // Add virtual columns for blob metadata
-      addBlobVirtualColumns(fieldVectors, root, fragmentScanner.getInputPartition());
-
-      if (fragmentScanner.withFragemtId()) {
-        ConstantColumnVector fragmentVector =
-            new ConstantColumnVector(root.getRowCount(), DataTypes.IntegerType);
-        fragmentVector.setInt(fragmentScanner.fragmentId());
-        fieldVectors.add(fragmentVector);
-      }
+          buildSparkOrderedVectors(root, fragmentScanner.getInputPartition());
 
       currentColumnarBatch =
           new ColumnarBatch(fieldVectors.toArray(new ColumnVector[] {}), root.getRowCount());
@@ -84,6 +78,18 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
    */
   public ColumnarBatch getCurrentBatch() {
     return currentColumnarBatch;
+  }
+
+  public long getLastBatchLoadTimeNs() {
+    return lastBatchLoadTimeNs;
+  }
+
+  public long getDatasetOpenTimeNs() {
+    return fragmentScanner.getDatasetOpenTimeNs();
+  }
+
+  public long getScannerCreateTimeNs() {
+    return fragmentScanner.getScannerCreateTimeNs();
   }
 
   @Override
@@ -101,8 +107,8 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
     }
   }
 
-  private void addBlobVirtualColumns(
-      List<ColumnVector> fieldVectors, VectorSchemaRoot root, LanceInputPartition inputPartition) {
+  private List<ColumnVector> buildSparkOrderedVectors(
+      VectorSchemaRoot root, LanceInputPartition inputPartition) {
     StructType schema = inputPartition.getSchema();
 
     Map<String, FieldVector> actualFields = new HashMap<>();
@@ -111,10 +117,16 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
       actualFields.put(rootVectors.get(i).getField().getName(), rootVectors.get(i));
     }
 
+    List<ColumnVector> fieldVectors = new ArrayList<>(schema.size());
     StructField[] fields = schema.fields();
     for (StructField field : fields) {
       String fieldName = field.name();
-      if (fieldName.endsWith(LanceConstant.BLOB_POSITION_SUFFIX)) {
+      if (fieldName.equals(LanceConstant.FRAGMENT_ID)) {
+        ConstantColumnVector fragmentVector =
+            new ConstantColumnVector(root.getRowCount(), DataTypes.IntegerType);
+        fragmentVector.setInt(fragmentScanner.fragmentId());
+        fieldVectors.add(fragmentVector);
+      } else if (fieldName.endsWith(LanceConstant.BLOB_POSITION_SUFFIX)) {
         String baseName =
             fieldName.substring(
                 0, fieldName.length() - LanceConstant.BLOB_POSITION_SUFFIX.length());
@@ -132,8 +144,16 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
           BlobSizeColumnVector sizeVector = new BlobSizeColumnVector((StructVector) blobVector);
           fieldVectors.add(sizeVector);
         }
+      } else {
+        FieldVector vector = actualFields.get(fieldName);
+        if (vector == null) {
+          throw new IllegalStateException(
+              "Lance scan did not return expected field '" + fieldName + "'");
+        }
+        fieldVectors.add(new LanceArrowColumnVector(vector));
       }
     }
+    return fieldVectors;
   }
 
   // Virtual column vector for blob position

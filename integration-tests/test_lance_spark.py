@@ -26,6 +26,92 @@ requires_update_or_merge = pytest.mark.skipif(
     reason="UPDATE/MERGE require Spark 3.5+ (row-level rewrite rules not available in 3.4)"
 )
 
+LANCE_CATALOG = "lance"
+
+
+def _java_hash_map(spark, values):
+    java_map = spark._jvm.java.util.HashMap()
+    for key, value in values.items():
+        if value is not None:
+            java_map.put(key, value)
+    return java_map
+
+
+def _lance_storage_options(spark):
+    prefix = f"spark.sql.catalog.{LANCE_CATALOG}.storage."
+    return {
+        key[len(prefix) :]: value
+        for key, value in spark.sparkContext.getConf().getAll()
+        if key.startswith(prefix)
+    }
+
+
+def _table_location(spark, table_name):
+    rows = (
+        spark.sql(f"DESCRIBE EXTENDED {table_name}")
+        .filter("col_name == 'Location'")
+        .collect()
+    )
+    assert rows, f"DESCRIBE EXTENDED did not return a Location row for {table_name}"
+    return rows[0].data_type
+
+
+def _read_options_builder(jvm):
+    try:
+        return jvm.org.lance.ReadOptions.Builder()
+    except Exception:
+        return getattr(jvm.org.lance, "ReadOptions$Builder")()
+
+
+def _lance_index_metadata(spark, table_name, index_name):
+    if getattr(spark, "_lance_backend", None) == "lancedb":
+        return None
+
+    jvm = spark._jvm
+    storage_options = _java_hash_map(spark, _lance_storage_options(spark))
+    read_options = (
+        _read_options_builder(jvm)
+        .setStorageOptions(storage_options)
+        .setSession(jvm.org.lance.spark.LanceRuntime.session(LANCE_CATALOG))
+        .build()
+    )
+    dataset = (
+        jvm.org.lance.Dataset.open()
+        .allocator(jvm.org.lance.spark.LanceRuntime.allocator())
+        .uri(_table_location(spark, table_name))
+        .readOptions(read_options)
+        .build()
+    )
+    try:
+        indexes = dataset.getIndexes()
+        for pos in range(indexes.size()):
+            index = indexes.get(pos)
+            if index.name() == index_name:
+                index_details = index.indexDetails()
+                return {
+                    "name": index.name(),
+                    "index_type": index.indexType().name(),
+                    "index_version": index.indexVersion(),
+                    "index_details_present": index_details.isPresent(),
+                    "index_details_length": (
+                        len(index_details.get()) if index_details.isPresent() else 0
+                    ),
+                }
+    finally:
+        dataset.close()
+
+    pytest.fail(f"Index {index_name} not found in {table_name}")
+
+
+def _assert_lance_index_metadata(spark, table_name, index_name, expected_type):
+    metadata = _lance_index_metadata(spark, table_name, index_name)
+    if metadata is None:
+        return None
+    assert metadata["index_type"] == expected_type
+    assert metadata["index_details_present"]
+    assert metadata["index_details_length"] > 0
+    return metadata
+
 
 # =============================================================================
 # DDL (Data Definition Language) Tests
@@ -653,6 +739,7 @@ class TestDDLIndex:
         """).collect()
         assert len(query_result) == 1
         assert query_result[0].id == 50
+        _assert_lance_index_metadata(spark, "default.test_table", "idx_id", "BTREE")
 
     def test_create_btree_index_on_string(self, spark):
         """Test CREATE INDEX with BTree on string column."""
@@ -689,6 +776,7 @@ class TestDDLIndex:
             SELECT * FROM default.employees WHERE department = 'Engineering'
         """).collect()
         assert len(query_result) == 3
+        _assert_lance_index_metadata(spark, "default.employees", "idx_dept", "BTREE")
 
     def test_create_fts_index(self, spark):
         """Test CREATE INDEX with full-text search (FTS)."""
@@ -719,6 +807,46 @@ class TestDDLIndex:
 
         assert len(result) == 1
         assert result[0][1] == "idx_content_fts"
+        metadata = _assert_lance_index_metadata(
+            spark, "default.test_table", "idx_content_fts", "INVERTED"
+        )
+        if metadata is not None:
+            assert metadata["index_version"] > 0
+            if os.environ.get("LANCE_FTS_FORMAT_VERSION") == "2":
+                assert metadata["index_version"] == 2
+
+    def test_create_fts_index_honors_format_version_v2(self, spark):
+        """Test FTS v2 when the Docker test process enables the Lance runtime flag."""
+        if os.environ.get("LANCE_FTS_FORMAT_VERSION") != "2":
+            pytest.skip("run with LANCE_FTS_FORMAT_VERSION=2")
+        if getattr(spark, "_lance_backend", None) == "lancedb":
+            pytest.skip("direct JVM dataset inspection is not configured for REST-backed tables")
+
+        spark.sql("""
+            CREATE TABLE default.test_table (
+                id INT,
+                content STRING
+            )
+        """)
+
+        data = [
+            (1, "distributed indexing records metadata"),
+            (2, "full text search v2"),
+            (3, "lance spark integration"),
+        ]
+        df = spark.createDataFrame(data, ["id", "content"])
+        df.writeTo("default.test_table").append()
+
+        spark.sql("""
+            ALTER TABLE default.test_table
+            CREATE INDEX idx_content_fts_v2 USING fts (content)
+            WITH ( base_tokenizer = 'simple', language = 'English' )
+        """)
+
+        metadata = _assert_lance_index_metadata(
+            spark, "default.test_table", "idx_content_fts_v2", "INVERTED"
+        )
+        assert metadata["index_version"] == 2
 
     def test_create_index_empty_table(self, spark):
         """Test CREATE INDEX on empty table."""
@@ -2384,26 +2512,26 @@ class TestStableRowIds:
       _row_created_at_version for all rows in that fragment.
     """
 
-    def test_tblproperties_enable_stable_row_ids(self, spark):
+    def test_tblproperties_enable_stable_row_ids(self, spark, test_table):
         """Test that TBLPROPERTIES enables CDF version columns."""
-        spark.sql("""
-            CREATE TABLE default.test_table (
+        spark.sql(f"""
+            CREATE TABLE {test_table} (
                 id INT,
                 name STRING,
                 value INT
             ) TBLPROPERTIES ('enable_stable_row_ids' = 'true')
         """)
 
-        spark.sql("""
-            INSERT INTO default.test_table VALUES
+        spark.sql(f"""
+            INSERT INTO {test_table} VALUES
             (1, 'Alice', 100),
             (2, 'Bob', 200),
             (3, 'Charlie', 300)
         """)
 
-        result = spark.sql("""
+        result = spark.sql(f"""
             SELECT id, _row_created_at_version, _row_last_updated_at_version
-            FROM default.test_table
+            FROM {test_table}
             ORDER BY id
         """).collect()
 
@@ -2412,30 +2540,30 @@ class TestStableRowIds:
             assert row._row_created_at_version is not None
             assert row._row_last_updated_at_version is not None
 
-    def test_default_behavior_no_stable_row_ids(self, spark):
+    def test_default_behavior_no_stable_row_ids(self, spark, test_table):
         """Test version columns without enable_stable_row_ids.
 
         Without enable_stable_row_ids the Lance engine still populates
         _row_created_at_version and _row_last_updated_at_version, but
         returns a baseline value of 1 instead of the actual operation version.
         """
-        spark.sql("""
-            CREATE TABLE default.test_table (
+        spark.sql(f"""
+            CREATE TABLE {test_table} (
                 id INT,
                 name STRING,
                 value INT
             )
         """)
 
-        spark.sql("""
-            INSERT INTO default.test_table VALUES
+        spark.sql(f"""
+            INSERT INTO {test_table} VALUES
             (1, 'Alice', 100),
             (2, 'Bob', 200)
         """)
 
-        result = spark.sql("""
+        result = spark.sql(f"""
             SELECT id, _row_created_at_version, _row_last_updated_at_version
-            FROM default.test_table
+            FROM {test_table}
             ORDER BY id
         """).collect()
 
@@ -2446,14 +2574,14 @@ class TestStableRowIds:
             assert row._row_last_updated_at_version == 1
 
     @requires_update_or_merge
-    def test_cdc_incremental_ingestion_pattern(self, spark):
+    def test_cdc_incremental_ingestion_pattern(self, spark, test_table):
         """Test CDC incremental ingestion pipeline pattern.
 
         Simulates a CDC pipeline that tracks the last processed version and
         incrementally processes changes using version tracking columns.
         """
-        spark.sql("""
-            CREATE TABLE default.test_table (
+        spark.sql(f"""
+            CREATE TABLE {test_table} (
                 id INT,
                 name STRING,
                 value INT
@@ -2461,8 +2589,8 @@ class TestStableRowIds:
         """)
 
         # v2: Initial data load
-        spark.sql("""
-            INSERT INTO default.test_table VALUES
+        spark.sql(f"""
+            INSERT INTO {test_table} VALUES
             (1, 'Alice', 100),
             (2, 'Bob', 200),
             (3, 'Charlie', 300)
@@ -2472,7 +2600,7 @@ class TestStableRowIds:
         last_processed_version = 1
         batch1 = spark.sql(f"""
             SELECT id, name, value, _row_created_at_version, _row_last_updated_at_version
-            FROM default.test_table
+            FROM {test_table}
             WHERE (_row_created_at_version > {last_processed_version})
                OR (_row_last_updated_at_version > {last_processed_version})
             ORDER BY id
@@ -2483,23 +2611,23 @@ class TestStableRowIds:
         last_processed_version = 2
 
         # v3: Update one row, v4: Insert new row
-        spark.sql("UPDATE default.test_table SET value = value + 50 WHERE id = 1")
-        spark.sql("INSERT INTO default.test_table VALUES (4, 'David', 400)")
+        spark.sql(f"UPDATE {test_table} SET value = value + 50 WHERE id = 1")
+        spark.sql(f"INSERT INTO {test_table} VALUES (4, 'David', 400)")
 
         # CDC Pipeline: Process batch 2 (changes since v2)
         batch2 = spark.sql(f"""
             SELECT id, name, value, _row_created_at_version, _row_last_updated_at_version
-            FROM default.test_table
+            FROM {test_table}
             WHERE (_row_created_at_version > {last_processed_version})
                OR (_row_last_updated_at_version > {last_processed_version})
             ORDER BY id
         """).collect()
 
         assert len(batch2) == 2
-        # Alice was updated in v3 — fragment rewrite recalculates created_at to 1
+        # Alice was updated in v3 — stable row ID preserves original created_at (v2)
         alice = [r for r in batch2 if r.id == 1][0]
         assert alice.value == 150
-        assert alice._row_created_at_version == 1
+        assert alice._row_created_at_version == 2
         assert alice._row_last_updated_at_version == 3
         # David was inserted in v4
         david = [r for r in batch2 if r.id == 4][0]
@@ -2509,12 +2637,12 @@ class TestStableRowIds:
         last_processed_version = 4
 
         # v5: More updates
-        spark.sql("UPDATE default.test_table SET value = value + 100 WHERE id IN (2, 3)")
+        spark.sql(f"UPDATE {test_table} SET value = value + 100 WHERE id IN (2, 3)")
 
         # CDC Pipeline: Process batch 3 (changes since v4)
         batch3 = spark.sql(f"""
             SELECT id, name, value, _row_created_at_version, _row_last_updated_at_version
-            FROM default.test_table
+            FROM {test_table}
             WHERE (_row_created_at_version > {last_processed_version})
                OR (_row_last_updated_at_version > {last_processed_version})
             ORDER BY id
@@ -2531,12 +2659,12 @@ class TestStableRowIds:
         last_processed_version = 5
 
         # v6: Update entire table
-        spark.sql("UPDATE default.test_table SET value = value * 2")
+        spark.sql(f"UPDATE {test_table} SET value = value * 2")
 
         # CDC Pipeline: Process batch 4 (changes since v5)
         batch4 = spark.sql(f"""
             SELECT id, name, value, _row_created_at_version, _row_last_updated_at_version
-            FROM default.test_table
+            FROM {test_table}
             WHERE (_row_created_at_version > {last_processed_version})
                OR (_row_last_updated_at_version > {last_processed_version})
             ORDER BY id
@@ -2582,14 +2710,15 @@ class TestStableRowIds:
 
         return catalog_name
 
-    def test_catalog_level_stable_row_ids(self, spark):
+    def test_catalog_level_stable_row_ids(self, spark, test_table):
         """Test that catalog-level enable_stable_row_ids enables version columns without TBLPROPERTIES."""
         catalog_name = self._register_cdf_catalog(spark)
+        cdf_table = f"{catalog_name}.{test_table}"
 
         try:
             # CREATE TABLE without TBLPROPERTIES — relies on catalog-level default
             spark.sql(f"""
-                CREATE TABLE {catalog_name}.default.test_table (
+                CREATE TABLE {cdf_table} (
                     id INT,
                     name STRING,
                     value INT
@@ -2597,14 +2726,14 @@ class TestStableRowIds:
             """)
 
             spark.sql(f"""
-                INSERT INTO {catalog_name}.default.test_table VALUES
+                INSERT INTO {cdf_table} VALUES
                 (1, 'Alice', 100),
                 (2, 'Bob', 200)
             """)
 
             result = spark.sql(f"""
                 SELECT id, _row_created_at_version, _row_last_updated_at_version
-                FROM {catalog_name}.default.test_table
+                FROM {cdf_table}
                 ORDER BY id
             """).collect()
 
@@ -2614,9 +2743,63 @@ class TestStableRowIds:
                 assert row._row_last_updated_at_version is not None
         finally:
             try:
-                spark.sql(f"DROP TABLE IF EXISTS {catalog_name}.default.test_table PURGE")
+                spark.sql(f"DROP TABLE IF EXISTS {cdf_table} PURGE")
             except Exception as e:
-                print(f"Failed to clean up {catalog_name}.default.test_table: {e}")
+                print(f"Failed to clean up {cdf_table}: {e}")
+
+
+    @requires_update_or_merge
+    def test_update_preserves_row_ids(self, spark, test_table):
+        """Test that UPDATE preserves _rowid values when stable row IDs are enabled.
+
+        Verifies the native DeltaWriter.update() path with RowIdMeta attachment
+        keeps row IDs stable across updates, including multi-fragment scenarios.
+        """
+        spark.sql(f"""
+            CREATE TABLE {test_table} (
+                id INT,
+                name STRING,
+                value INT
+            ) TBLPROPERTIES ('enable_stable_row_ids' = 'true')
+        """)
+
+        # Insert across two fragments
+        spark.sql(f"""
+            INSERT INTO {test_table} VALUES
+            (1, 'Alice', 100),
+            (2, 'Bob', 200),
+            (3, 'Charlie', 300)
+        """)
+        spark.sql(f"""
+            INSERT INTO {test_table} VALUES
+            (4, 'Dave', 400),
+            (5, 'Eve', 500)
+        """)
+
+        # Capture row IDs before update
+        before = spark.sql(f"""
+            SELECT id, _rowid FROM {test_table} ORDER BY id
+        """).collect()
+        row_ids_before = {row.id: row._rowid for row in before}
+        assert len(row_ids_before) == 5
+
+        # Update rows spanning both fragments
+        spark.sql(f"UPDATE {test_table} SET value = value + 1 WHERE value >= 200")
+
+        # Capture row IDs after update
+        after = spark.sql(f"""
+            SELECT id, _rowid, value FROM {test_table} ORDER BY id
+        """).collect()
+        row_ids_after = {row.id: row._rowid for row in after}
+
+        # Verify row IDs are preserved for all rows
+        for row_id_key in row_ids_before:
+            assert row_ids_before[row_id_key] == row_ids_after[row_id_key], \
+                f"_rowid changed for id={row_id_key}"
+
+        # Verify data correctness
+        values = {row.id: row.value for row in after}
+        assert values == {1: 100, 2: 201, 3: 301, 4: 401, 5: 501}
 
 
 if __name__ == "__main__":

@@ -15,13 +15,12 @@ package org.lance.spark.read;
 
 import org.lance.spark.utils.Optional;
 
-import org.apache.spark.sql.sources.*;
+import org.apache.spark.sql.connector.expressions.filter.Predicate;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.sql.Date;
 import java.sql.Timestamp;
-import java.time.LocalTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,48 +28,51 @@ public class FilterPushDownTest {
   @Test
   public void testCompileFiltersToSqlWhereClause() {
     // Test case 1: GreaterThan, LessThanOrEqual, IsNotNull
-    Filter[] filters1 =
-        new Filter[] {
-          new GreaterThan("age", 30), new LessThanOrEqual("salary", 100000), new IsNotNull("name")
+    Predicate[] filters1 =
+        new Predicate[] {
+          TestPredicates.gt("age", 30),
+          TestPredicates.lte("salary", 100000),
+          TestPredicates.isNotNull("name")
         };
     Optional<String> whereClause1 = FilterPushDown.compileFiltersToSqlWhereClause(filters1);
     assertTrue(whereClause1.isPresent());
     assertEquals("(age > 30) AND (salary <= 100000) AND (name IS NOT NULL)", whereClause1.get());
 
     // Test case 2: GreaterThan, StringContains, LessThan
-    Filter[] filters2 =
-        new Filter[] {
-          new GreaterThan("age", 30),
-          new StringContains("name", "John"),
-          new LessThan("salary", 50000)
+    Predicate[] filters2 =
+        new Predicate[] {
+          TestPredicates.gt("age", 30),
+          TestPredicates.contains("name", "John"),
+          TestPredicates.lt("salary", 50000)
         };
     Optional<String> whereClause2 = FilterPushDown.compileFiltersToSqlWhereClause(filters2);
     assertTrue(whereClause2.isPresent());
     assertEquals("(age > 30) AND (salary < 50000)", whereClause2.get());
 
     // Test case 3: Empty filters array
-    Filter[] filters3 = new Filter[] {};
+    Predicate[] filters3 = new Predicate[] {};
     Optional<String> whereClause3 = FilterPushDown.compileFiltersToSqlWhereClause(filters3);
     assertFalse(whereClause3.isPresent());
 
     // Test case 4: Mixed supported and unsupported filters
-    Filter[] filters4 =
-        new Filter[] {
-          new GreaterThan("age", 30),
-          new StringContains("name", "John"),
-          new IsNull("address"),
-          new EqualTo("country", "USA")
+    Predicate[] filters4 =
+        new Predicate[] {
+          TestPredicates.gt("age", 30),
+          TestPredicates.contains("name", "John"),
+          TestPredicates.isNull("address"),
+          TestPredicates.eq("country", "USA")
         };
     Optional<String> whereClause4 = FilterPushDown.compileFiltersToSqlWhereClause(filters4);
     assertTrue(whereClause4.isPresent());
     assertEquals("(age > 30) AND (address IS NULL) AND (country == 'USA')", whereClause4.get());
 
     // Test case 5: Not, Or, And combinations
-    Filter[] filters5 =
-        new Filter[] {
-          new Not(new GreaterThan("age", 30)),
-          new Or(new IsNotNull("name"), new IsNull("address")),
-          new And(new LessThan("salary", 100000), new GreaterThanOrEqual("salary", 50000))
+    Predicate[] filters5 =
+        new Predicate[] {
+          TestPredicates.not(TestPredicates.gt("age", 30)),
+          TestPredicates.or(TestPredicates.isNotNull("name"), TestPredicates.isNull("address")),
+          TestPredicates.and(
+              TestPredicates.lt("salary", 100000), TestPredicates.gte("salary", 50000))
         };
     Optional<String> whereClause5 = FilterPushDown.compileFiltersToSqlWhereClause(filters5);
     assertTrue(whereClause5.isPresent());
@@ -81,7 +83,7 @@ public class FilterPushDownTest {
 
   @Test
   public void testCompileFiltersToSqlWhereClauseWithEmptyFilters() {
-    Filter[] filters = new Filter[] {};
+    Predicate[] filters = new Predicate[] {};
 
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertFalse(whereClause.isPresent());
@@ -92,7 +94,8 @@ public class FilterPushDownTest {
     Object[] values = new Object[2];
     values[0] = 500;
     values[1] = 600;
-    Filter[] filters = new Filter[] {new GreaterThan("age", 30), new In("salary", values)};
+    Predicate[] filters =
+        new Predicate[] {TestPredicates.gt("age", 30), TestPredicates.in("salary", values)};
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals("(age > 30) AND (salary IN (500,600))", whereClause.get());
@@ -103,7 +106,8 @@ public class FilterPushDownTest {
     Object[] values = new Object[2];
     values[0] = "500";
     values[1] = "600";
-    Filter[] filters = new Filter[] {new GreaterThan("age", 30), new In("salary", values)};
+    Predicate[] filters =
+        new Predicate[] {TestPredicates.gt("age", 30), TestPredicates.in("salary", values)};
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals("(age > 30) AND (salary IN ('500','600'))", whereClause.get());
@@ -111,7 +115,7 @@ public class FilterPushDownTest {
 
   @Test
   public void testStringValueWithSingleQuoteEscaping() {
-    Filter[] filters = new Filter[] {new EqualTo("name", "O'Brien")};
+    Predicate[] filters = new Predicate[] {TestPredicates.eq("name", "O'Brien")};
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals("(name == 'O''Brien')", whereClause.get());
@@ -120,7 +124,7 @@ public class FilterPushDownTest {
   @Test
   public void testStringInFilterWithSingleQuoteEscaping() {
     Object[] values = new Object[] {"O'Brien", "D'Angelo"};
-    Filter[] filters = new Filter[] {new In("name", values)};
+    Predicate[] filters = new Predicate[] {TestPredicates.in("name", values)};
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals("(name IN ('O''Brien','D''Angelo'))", whereClause.get());
@@ -130,10 +134,10 @@ public class FilterPushDownTest {
   public void testDecimalFilterPushDown() {
     // Decimal comparisons must use CAST so Lance's DataFusion parser produces Decimal128,
     // not Float64, which would fail type resolution against Decimal columns.
-    Filter[] filters =
-        new Filter[] {
-          new GreaterThanOrEqual("net_profit", new BigDecimal("100.00")),
-          new LessThanOrEqual("net_profit", new BigDecimal("200.00"))
+    Predicate[] filters =
+        new Predicate[] {
+          TestPredicates.gte("net_profit", new BigDecimal("100.00")),
+          TestPredicates.lte("net_profit", new BigDecimal("200.00"))
         };
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
@@ -146,7 +150,7 @@ public class FilterPushDownTest {
   public void testDecimalInFilterPushDown() {
     Object[] values =
         new Object[] {new BigDecimal("100.00"), new BigDecimal("150.00"), new BigDecimal("200.00")};
-    Filter[] filters = new Filter[] {new In("price", values)};
+    Predicate[] filters = new Predicate[] {TestPredicates.in("price", values)};
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals(
@@ -157,10 +161,10 @@ public class FilterPushDownTest {
   @Test
   public void testDecimalWithVaryingScaleAndPrecision() {
     // Verify precision/scale are taken from the BigDecimal value itself
-    Filter[] filters =
-        new Filter[] {
-          new GreaterThan("amount", new BigDecimal("1234567.89")),
-          new LessThan("amount", new BigDecimal("0.5"))
+    Predicate[] filters =
+        new Predicate[] {
+          TestPredicates.gt("amount", new BigDecimal("1234567.89")),
+          TestPredicates.lt("amount", new BigDecimal("0.5"))
         };
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
@@ -174,10 +178,10 @@ public class FilterPushDownTest {
     // Java's BigDecimal returns precision=1 for zero regardless of scale, e.g.
     // new BigDecimal("0.00") has precision=1 and scale=2. Arrow rejects DECIMAL(1,2) because
     // scale > precision is invalid. The fix clamps: precision = max(precision, scale).
-    Filter[] filters =
-        new Filter[] {
-          new GreaterThan("net_paid", new BigDecimal("0.00")),
-          new GreaterThan("net_profit", new BigDecimal("1.00"))
+    Predicate[] filters =
+        new Predicate[] {
+          TestPredicates.gt("net_paid", new BigDecimal("0.00")),
+          TestPredicates.gt("net_profit", new BigDecimal("1.00"))
         };
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
@@ -190,10 +194,10 @@ public class FilterPushDownTest {
   public void testDateFilterPushDown() {
     // Date literals must use the 'date' keyword so Lance's DataFusion parser produces Date32,
     // not Utf8, which would fail type resolution against Date columns.
-    Filter[] filters =
-        new Filter[] {
-          new GreaterThanOrEqual("d_date", Date.valueOf("2000-08-23")),
-          new LessThanOrEqual("d_date", Date.valueOf("2000-09-06"))
+    Predicate[] filters =
+        new Predicate[] {
+          TestPredicates.gte("d_date", Date.valueOf("2000-08-23")),
+          TestPredicates.lte("d_date", Date.valueOf("2000-09-06"))
         };
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
@@ -205,55 +209,45 @@ public class FilterPushDownTest {
   public void testTimestampFilterPushDown() {
     // Timestamp literals must use the 'timestamp' keyword so Lance's DataFusion parser produces
     // Timestamp, not Utf8.
-    Filter[] filters =
-        new Filter[] {new EqualTo("created_at", Timestamp.valueOf("2024-01-15 10:30:00.0"))};
+    Predicate[] filters =
+        new Predicate[] {
+          TestPredicates.eq("created_at", Timestamp.valueOf("2024-01-15 10:30:00.0"))
+        };
     Optional<String> whereClause = FilterPushDown.compileFiltersToSqlWhereClause(filters);
     assertTrue(whereClause.isPresent());
     assertEquals("(created_at == timestamp '2024-01-15 10:30:00.0')", whereClause.get());
   }
 
   @Test
-  public void testLocalTimeFilterRejected() {
-    // LocalTime values (from Spark TimeType) must be rejected from pushdown because
-    // Lance's DataFusion planner does not support SQLDataType::Time in parse_type()
-    // and safe_coerce_scalar() does not handle Utf8 -> Time64 coercion.
-    assertFalse(FilterPushDown.isFilterSupported(new GreaterThan("t", LocalTime.of(12, 30, 45))));
-    assertFalse(FilterPushDown.isFilterSupported(new EqualTo("t", LocalTime.of(0, 0, 0))));
-    assertFalse(
-        FilterPushDown.isFilterSupported(
-            new LessThanOrEqual("t", LocalTime.of(23, 59, 59, 999_999_000))));
-    assertFalse(FilterPushDown.isFilterSupported(new LessThan("t", LocalTime.of(12, 0))));
-    assertFalse(FilterPushDown.isFilterSupported(new GreaterThanOrEqual("t", LocalTime.of(8, 0))));
+  public void testTimeTypeFilterRejected() throws Exception {
+    // TimeType literals must be rejected from pushdown because Lance's DataFusion planner does
+    // not yet support SQLDataType::Time in parse_type(). TimeType exists only in Spark 4.1+,
+    // so we construct it via reflection and skip the assertion on older versions.
+    org.apache.spark.sql.types.DataType timeType;
+    try {
+      Class<?> timeTypeClass = Class.forName("org.apache.spark.sql.types.TimeType");
+      timeType =
+          (org.apache.spark.sql.types.DataType)
+              timeTypeClass.getDeclaredConstructor(int.class).newInstance(6);
+    } catch (ClassNotFoundException e) {
+      return; // Spark < 4.1: nothing to test.
+    }
 
-    // In filter with LocalTime values should also be rejected
-    Object[] timeValues = new Object[] {LocalTime.of(8, 0), LocalTime.of(17, 0)};
-    assertFalse(FilterPushDown.isFilterSupported(new In("t", timeValues)));
+    org.apache.spark.sql.connector.expressions.LiteralValue<Long> timeLit =
+        new org.apache.spark.sql.connector.expressions.LiteralValue<>(0L, timeType);
+    Predicate timeGt =
+        new Predicate(
+            ">",
+            new org.apache.spark.sql.connector.expressions.Expression[] {
+              org.apache.spark.sql.connector.expressions.FieldReference.apply("t"), timeLit
+            });
+    assertFalse(FilterPushDown.isPredicateSupported(timeGt));
 
-    // IsNull/IsNotNull on time columns have no value → still supported
-    assertTrue(FilterPushDown.isFilterSupported(new IsNull("t")));
-    assertTrue(FilterPushDown.isFilterSupported(new IsNotNull("t")));
-
-    // Mixed filter: And with one LocalTime leg rejects the whole And
-    assertFalse(
-        FilterPushDown.isFilterSupported(
-            new And(new GreaterThan("age", 30), new GreaterThan("t", LocalTime.of(12, 0)))));
-
-    // Or with one LocalTime leg rejects the whole Or
-    assertFalse(
-        FilterPushDown.isFilterSupported(
-            new Or(new GreaterThan("t", LocalTime.of(12, 0)), new GreaterThan("age", 30))));
-
-    // Not wrapping a LocalTime filter is also rejected
-    assertFalse(
-        FilterPushDown.isFilterSupported(new Not(new GreaterThan("t", LocalTime.of(12, 0)))));
-
-    // processFilters should put LocalTime filters in the rejected bucket
-    Filter timeFilter = new GreaterThan("t", LocalTime.of(12, 0));
-    Filter intFilter = new GreaterThan("age", 30);
-    Filter[][] result = FilterPushDown.processFilters(new Filter[] {timeFilter, intFilter});
-    assertEquals(1, result[0].length); // accepted: age > 30
-    assertEquals(1, result[1].length); // rejected: t > 12:00
-    assertEquals(intFilter, result[0][0]);
-    assertEquals(timeFilter, result[1][0]);
+    Predicate intGt = TestPredicates.gt("age", 30);
+    Predicate[][] processed = FilterPushDown.processPredicates(new Predicate[] {timeGt, intGt});
+    assertEquals(1, processed[0].length);
+    assertEquals(1, processed[1].length);
+    assertEquals(intGt, processed[0][0]);
+    assertEquals(timeGt, processed[1][0]);
   }
 }

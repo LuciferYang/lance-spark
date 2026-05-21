@@ -86,6 +86,11 @@ public class LanceDataset
         public DataType dataType() {
           return DataTypes.LongType;
         }
+
+        @Override
+        public boolean isNullable() {
+          return false;
+        }
       };
 
   public static final MetadataColumn ROW_ADDRESS_COLUMN =
@@ -324,6 +329,12 @@ public class LanceDataset
         && fileFormatVersion != null) {
       writeOptionsBuilder.fileFormatVersion(fileFormatVersion);
     }
+    if (!mergedOptions.containsKey(LanceSparkWriteOptions.CONFIG_ENABLE_STABLE_ROW_IDS)
+        && tableProperties.containsKey(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS)) {
+      writeOptionsBuilder.enableStableRowIds(
+          Boolean.parseBoolean(
+              tableProperties.get(LanceSparkCatalogConfig.TABLE_OPT_ENABLE_STABLE_ROW_IDS)));
+    }
     LanceSparkWriteOptions writeOptions = writeOptionsBuilder.build();
 
     List<String> backfillColumns =
@@ -368,7 +379,8 @@ public class LanceDataset
             namespaceImpl,
             namespaceProperties,
             readOptions.getTableId(),
-            managedVersioning);
+            managedVersioning,
+            tableProperties);
 
     if (stagedCommit != null) {
       builder.setStagedCommit(stagedCommit);

@@ -23,15 +23,14 @@ package org.apache.spark.sql.util
  * It has been modified by the Lance developers to fit the needs of the Lance project.
  */
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.apache.arrow.vector.complex.MapVector
 import org.apache.arrow.vector.types.{DateUnit, FloatingPointPrecision, IntervalUnit, TimeUnit}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.{SparkException, SparkUnsupportedOperationException}
 import org.apache.spark.sql.types._
-import org.json4s.{DefaultFormats, Formats}
-import org.json4s.JsonAST.{JObject, JString}
 import org.lance.spark.LanceConstant
-import org.lance.spark.utils.{BlobUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
+import org.lance.spark.utils.{BlobUtils, DateMilliUtils, Float16Utils, LargeVarCharUtils, VectorUtils}
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -39,10 +38,27 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.JavaConverters._
 
 object LanceArrowUtils {
+
+  private val mapper = new ObjectMapper()
+
   val ARROW_FIXED_SIZE_LIST_SIZE_KEY = VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY
   val ARROW_FLOAT16_KEY = Float16Utils.ARROW_FLOAT16_KEY
   val ENCODING_BLOB = BlobUtils.LANCE_ENCODING_BLOB_KEY
   val ARROW_LARGE_VAR_CHAR_KEY = LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY
+  val ARROW_DATE_MILLISECOND_KEY = DateMilliUtils.ARROW_DATE_MILLISECOND_KEY
+
+  // Namespaced keys used to embed child Spark Metadata on a parent StructField when the
+  // child sits inside an ArrayType/MapType — Spark has no per-element metadata slot of its
+  // own. The value is the child Metadata serialized as JSON (the same shape produced by
+  // `Metadata#json`), so deeply nested cases work transparently.
+  val LANCE_ELEMENT_METADATA_KEY = "_lance.element"
+  val LANCE_MAP_KEY_METADATA_KEY = "_lance.key"
+  val LANCE_MAP_VALUE_METADATA_KEY = "_lance.value"
+
+  private val LANCE_INTERNAL_METADATA_KEYS = Set(
+    LANCE_ELEMENT_METADATA_KEY,
+    LANCE_MAP_KEY_METADATA_KEY,
+    LANCE_MAP_VALUE_METADATA_KEY)
 
   def fromArrowField(field: Field): DataType = {
     field.getType match {
@@ -66,7 +82,7 @@ object LanceArrowUtils {
         val elementType = fromArrowField(elementField)
         val containsNull = elementField.isNullable
         ArrayType(elementType, containsNull)
-      case struct: ArrowType.Struct =>
+      case _: ArrowType.Struct =>
         // Always recurse through LanceArrowUtils for struct children so special cases
         // like Date(MILLISECOND), FixedSizeBinary, etc. are applied in nested schemas too.
         val blobField = isBlobField(field)
@@ -78,7 +94,11 @@ object LanceArrowUtils {
               LongType
             case _ => fromArrowField(childField)
           }
-          StructField(childField.getName, childType, childField.isNullable)
+          StructField(
+            childField.getName,
+            childType,
+            childField.isNullable,
+            buildFieldMetadata(childField))
         }.toArray
         StructType(fields)
       case largeBinary: ArrowType.LargeBinary if isBlobField(field) =>
@@ -140,32 +160,99 @@ object LanceArrowUtils {
         // TimeType is Spark 4.1+ only. Use reflection to create TimeType if available,
         // fall back to LongType (raw nanoseconds) on older Spark versions.
         TimeUtils.resolveSparkTimeType()
+      case d: ArrowType.Decimal if d.getBitWidth == 256 =>
+        // Spark only supports 128-bit decimal (precision <= 38).
+        // Throw at schema time rather than a cryptic UnsupportedOperationException
+        // when LanceArrowColumnVector tries to read the data.
+        throw unsupportedDataTypeError(
+          s"DECIMAL256(${d.getPrecision}, ${d.getScale}) in column '${field.getName}'." +
+            " Lance-Spark only supports 128-bit decimal (precision <= 38)." +
+            " Consider converting the column to a compatible DECIMAL type before reading.")
       case _ => ArrowUtils.fromArrowField(field)
     }
   }
 
   def fromArrowSchema(schema: Schema): StructType = {
     StructType(schema.getFields.asScala.map { field =>
-      val dt = fromArrowField(field)
-      // Preserve type information in metadata for types that need special handling on write
-      val metadata = field.getType match {
-        case fixedSizeList: ArrowType.FixedSizeList =>
-          val builder = new MetadataBuilder()
-            .putLong(ARROW_FIXED_SIZE_LIST_SIZE_KEY, fixedSizeList.getListSize)
-          if (Float16Utils.isFloat16ArrowField(field)) {
-            builder.putString(ARROW_FLOAT16_KEY, "true")
-          }
-          builder.build()
-        case _: ArrowType.LargeUtf8 =>
-          // Preserve LargeUtf8 type info so subsequent writes use LargeVarCharVector
-          new MetadataBuilder()
-            .putString(ARROW_LARGE_VAR_CHAR_KEY, "true")
-            .build()
-        case _ => Metadata.fromJObject(
-            JObject(field.getMetadata.asScala.map { case (k, v) => (k, JString(v)) }.toList))
-      }
-      StructField(field.getName, dt, field.isNullable, metadata)
+      StructField(
+        field.getName,
+        fromArrowField(field),
+        field.isNullable,
+        buildFieldMetadata(field))
     }.toArray)
+  }
+
+  /**
+   * Build Spark Metadata for the given Arrow field, capturing type information that Spark's
+   * DataType cannot represent on its own (Date(MILLISECOND), LargeUtf8, Float16, FixedSizeList
+   * size). For Arrow types that nest a Spark DataType lacking a metadata slot for its element
+   * (List, FixedSizeList, Map), the child's Spark Metadata is serialized as JSON under
+   * `_lance.element`, `_lance.key`, and `_lance.value` so writeback can reconstruct it.
+   */
+  private[util] def buildFieldMetadata(field: Field): Metadata = {
+    // Start from the Arrow field's user metadata so non-Lance keys (if any) survive.
+    val arrowMeta = Metadata.fromJson(mapper.writeValueAsString(field.getMetadata))
+    val builder = new MetadataBuilder().withMetadata(arrowMeta)
+    augmentTypeMarkers(builder, field)
+    augmentChildMetadata(builder, field)
+    builder.build()
+  }
+
+  private def augmentTypeMarkers(builder: MetadataBuilder, field: Field): Unit = {
+    field.getType match {
+      case fixedSizeList: ArrowType.FixedSizeList =>
+        builder.putLong(ARROW_FIXED_SIZE_LIST_SIZE_KEY, fixedSizeList.getListSize.toLong)
+        if (Float16Utils.isFloat16ArrowField(field)) {
+          builder.putString(ARROW_FLOAT16_KEY, Float16Utils.ARROW_FLOAT16_VALUE)
+        }
+      case _: ArrowType.LargeUtf8 =>
+        builder.putString(ARROW_LARGE_VAR_CHAR_KEY, LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_VALUE)
+      case date: ArrowType.Date if date.getUnit == DateUnit.MILLISECOND =>
+        builder.putString(ARROW_DATE_MILLISECOND_KEY, DateMilliUtils.ARROW_DATE_MILLISECOND_VALUE)
+      case _ =>
+    }
+  }
+
+  private def augmentChildMetadata(builder: MetadataBuilder, field: Field): Unit = {
+    field.getType match {
+      case _: ArrowType.FixedSizeList | _: ArrowType.List =>
+        val children = field.getChildren
+        if (!children.isEmpty && !Float16Utils.isFloat16ArrowField(field)) {
+          // For Float16 vectors, the child's HALF type is encoded in `arrow.float16` on the
+          // parent, so there is no extra child-side metadata worth embedding.
+          val childMeta = buildFieldMetadata(children.get(0))
+          if (hasContent(childMeta)) {
+            builder.putString(LANCE_ELEMENT_METADATA_KEY, childMeta.json)
+          }
+        }
+      case _: ArrowType.Map =>
+        val children = field.getChildren
+        if (!children.isEmpty) {
+          val entryChildren = children.get(0).getChildren
+          if (entryChildren.size() >= 2) {
+            val keyMeta = buildFieldMetadata(entryChildren.get(0))
+            val valueMeta = buildFieldMetadata(entryChildren.get(1))
+            if (hasContent(keyMeta)) {
+              builder.putString(LANCE_MAP_KEY_METADATA_KEY, keyMeta.json)
+            }
+            if (hasContent(valueMeta)) {
+              builder.putString(LANCE_MAP_VALUE_METADATA_KEY, valueMeta.json)
+            }
+          }
+        }
+      case _ =>
+    }
+  }
+
+  private def hasContent(metadata: Metadata): Boolean =
+    metadata != null && metadata.json != "{}"
+
+  private def parseEmbeddedMetadata(parent: Metadata, key: String): Metadata = {
+    if (parent == null || !parent.contains(key)) {
+      Metadata.empty
+    } else {
+      Metadata.fromJson(parent.getString(key))
+    }
   }
 
   def toArrowSchema(
@@ -211,14 +298,19 @@ object LanceArrowUtils {
         large = true
       }
 
-      implicit val formats: Formats = DefaultFormats
-      meta = metadata.jsonValue.extract[Map[String, Object]].map { case (k, v) =>
-        (k, String.valueOf(v))
-      }
+      meta = mapper
+        .readValue(metadata.json, classOf[java.util.LinkedHashMap[_, _]])
+        .asScala
+        .collect {
+          case (k, v) if !LANCE_INTERNAL_METADATA_KEYS.contains(k.toString) =>
+            (k.toString, String.valueOf(v))
+        }
+        .toMap
     }
 
     dt match {
       case ArrayType(elementType, containsNull) =>
+        val elementMetadata = parseEmbeddedMetadata(metadata, LANCE_ELEMENT_METADATA_KEY)
         if (shouldBeFixedSizeList(metadata, elementType)) {
           val listSize = metadata.getLong(ARROW_FIXED_SIZE_LIST_SIZE_KEY).toInt
           val fieldType =
@@ -244,7 +336,8 @@ object LanceArrowUtils {
               elementType,
               containsNull,
               timeZoneId,
-              largeVarTypes = largeVarTypes)
+              elementMetadata,
+              largeVarTypes)
           }
           new Field(
             name,
@@ -261,7 +354,8 @@ object LanceArrowUtils {
                 elementType,
                 containsNull,
                 timeZoneId,
-                largeVarTypes = largeVarTypes)).asJava)
+                elementMetadata,
+                largeVarTypes)).asJava)
         }
       case StructType(fields) =>
         val fieldType = new FieldType(nullable, ArrowType.Struct.INSTANCE, null, meta.asJava)
@@ -278,6 +372,8 @@ object LanceArrowUtils {
               largeVarTypes)
           }.toSeq.asJava)
       case MapType(keyType, valueType, valueContainsNull) =>
+        val keyMetadata = parseEmbeddedMetadata(metadata, LANCE_MAP_KEY_METADATA_KEY)
+        val valueMetadata = parseEmbeddedMetadata(metadata, LANCE_MAP_VALUE_METADATA_KEY)
         val mapType = new FieldType(nullable, new ArrowType.Map(false), null, meta.asJava)
         // Note: Map Type struct can not be null, Struct Type key field can not be null
         new Field(
@@ -286,13 +382,20 @@ object LanceArrowUtils {
           Seq(toArrowField(
             MapVector.DATA_VECTOR_NAME,
             new StructType()
-              .add(MapVector.KEY_NAME, keyType, nullable = false)
-              .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull),
+              .add(MapVector.KEY_NAME, keyType, nullable = false, keyMetadata)
+              .add(MapVector.VALUE_NAME, valueType, nullable = valueContainsNull, valueMetadata),
             nullable = false,
             timeZoneId,
             largeVarTypes = largeVarTypes)).asJava)
       case udt: UserDefinedType[_] =>
         toArrowField(name, udt.sqlType, nullable, timeZoneId, largeVarTypes = largeVarTypes)
+      case DateType if DateMilliUtils.hasDateMilliMetadata(metadata) =>
+        val fieldType = new FieldType(
+          nullable,
+          new ArrowType.Date(DateUnit.MILLISECOND),
+          null,
+          meta.asJava)
+        new Field(name, fieldType, Seq.empty[Field].asJava)
       case dataType =>
         val fieldType =
           new FieldType(nullable, toArrowType(dataType, timeZoneId, large, name), null, meta.asJava)
@@ -336,6 +439,13 @@ object LanceArrowUtils {
     // TimeType is Spark 4.1+ only. Use class name check for cross-version compatibility.
     case dt if dt.getClass.getName == "org.apache.spark.sql.types.TimeType" =>
       new ArrowType.Time(TimeUnit.NANOSECOND, 64)
+    // In Spark 3.4/3.5, CharType and VarcharType extend AtomicType (not StringType),
+    // so `case _: StringType` above does not match them. On Spark 4.0+ they extend
+    // StringType and are already caught above, making these branches harmlessly unreachable.
+    // Kept for Spark 3.x compatibility. Length constraints are intentionally discarded —
+    // Arrow has no varchar concept.
+    case _: CharType | _: VarcharType if largeVarTypes => ArrowType.LargeUtf8.INSTANCE
+    case _: CharType | _: VarcharType => ArrowType.Utf8.INSTANCE
     case _ =>
       throw unsupportedDataTypeError(dt)
   }
@@ -390,6 +500,13 @@ object LanceArrowUtils {
     new SparkUnsupportedOperationException(
       errorClass = "UNSUPPORTED_DATATYPE",
       messageParameters = Map("typeName" -> ("\"" + typeName.sql.toUpperCase(Locale.ROOT) + "\"")))
+  }
+
+  /* For unsupported Arrow types where a DataType cannot be constructed (e.g. DECIMAL256) */
+  private def unsupportedDataTypeError(typeName: String): SparkUnsupportedOperationException = {
+    new SparkUnsupportedOperationException(
+      errorClass = "UNSUPPORTED_DATATYPE",
+      messageParameters = Map("typeName" -> ("\"" + typeName + "\"")))
   }
 
   /* Copy from copy of org.apache.spark.sql.errors.ExecutionErrors for Spark version compatibility */

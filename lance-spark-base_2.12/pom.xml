@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.lance</groupId>
         <artifactId>lance-spark-root</artifactId>
-        <version>0.4.0-beta.2</version>
+        <version>0.5.0-beta.1</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -19,6 +19,12 @@
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-sql_${scala.compat.version}</artifactId>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.spark</groupId>
+            <artifactId>spark-mllib_${scala.compat.version}</artifactId>
+            <version>${spark.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

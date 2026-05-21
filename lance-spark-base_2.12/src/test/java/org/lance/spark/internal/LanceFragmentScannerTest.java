@@ -13,8 +13,13 @@
  */
 package org.lance.spark.internal;
 
+import org.lance.namespace.LanceNamespace;
 import org.lance.spark.LanceConstant;
+import org.lance.spark.LanceSparkReadOptions;
+import org.lance.spark.read.LanceInputPartition;
+import org.lance.spark.utils.Optional;
 
+import org.apache.arrow.memory.BufferAllocator;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
@@ -23,9 +28,14 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class LanceFragmentScannerTest {
 
@@ -65,7 +75,7 @@ public class LanceFragmentScannerTest {
             });
 
     List<String> result = callGetColumnNames(schema);
-    List<String> expected = Arrays.asList("id", "name", LanceConstant.ROW_ID);
+    List<String> expected = Arrays.asList("id", "name");
     assertEquals(expected, result);
   }
 
@@ -80,7 +90,7 @@ public class LanceFragmentScannerTest {
             });
 
     List<String> result = callGetColumnNames(schema);
-    List<String> expected = Arrays.asList("id", "name", LanceConstant.ROW_ADDRESS);
+    List<String> expected = Arrays.asList("id", "name");
     assertEquals(expected, result);
   }
 
@@ -125,14 +135,12 @@ public class LanceFragmentScannerTest {
             });
 
     List<String> result = callGetColumnNames(schema);
-    // Data columns first, then metadata columns in METADATA_COLUMNS order
-    // Note: FRAGMENT_ID is excluded as it's not included in the projection
+    // Data columns first, then version columns. Row ID, row address, and fragment ID are requested
+    // outside the projection list.
     List<String> expected =
         Arrays.asList(
             "id",
             "name",
-            LanceConstant.ROW_ID,
-            LanceConstant.ROW_ADDRESS,
             LanceConstant.ROW_LAST_UPDATED_AT_VERSION,
             LanceConstant.ROW_CREATED_AT_VERSION);
     assertEquals(expected, result);
@@ -173,14 +181,12 @@ public class LanceFragmentScannerTest {
             });
 
     List<String> result = callGetColumnNames(schema);
-    // Regular data columns in schema order, then metadata columns in METADATA_COLUMNS order
+    // Regular data columns in schema order, then projected version metadata columns.
     List<String> expected =
         Arrays.asList(
             "z_last_column",
             "a_first_column",
             "m_middle_column",
-            LanceConstant.ROW_ID,
-            LanceConstant.ROW_ADDRESS,
             LanceConstant.ROW_CREATED_AT_VERSION);
     assertEquals(expected, result);
   }
@@ -198,5 +204,78 @@ public class LanceFragmentScannerTest {
     List<String> result = callGetColumnNames(schema);
     List<String> expected = Arrays.asList("id");
     assertEquals(expected, result);
+  }
+
+  /**
+   * Locks down the executor-branch contract for {@code executor_credential_refresh=false}: when an
+   * executor opens a fragment for a namespace-backed table with the flag disabled, {@link
+   * LanceFragmentScanner#create} must <i>not</i> reconstruct the namespace client. Without this
+   * gate, executors of Kerberized HMS catalogs hit {@code GSS initiate failed} because they lack a
+   * TGT for the eager {@code describeTable()} RPC.
+   *
+   * <p>Strategy: hand a real, loadable {@link LanceNamespace} impl to the partition. If the gate
+   * regresses (rebuild not skipped), {@code LanceNamespace.connect} would succeed via {@code
+   * Class.forName}, {@link RecordingNamespace#initialize} would run, and {@code
+   * readOptions.setNamespace(...)} would fire — all observable here. The bogus dataset URI lets the
+   * outer {@code Utils.openDatasetBuilder().build()} call fail predictably, since the gate runs
+   * <i>before</i> the dataset is opened. No real Lance dataset is required.
+   */
+  @Test
+  public void testCreateSkipsNamespaceRebuildWhenExecutorCredentialRefreshDisabled() {
+    RecordingNamespace.INITIALIZE_CALLS.set(0);
+
+    LanceSparkReadOptions readOptions =
+        LanceSparkReadOptions.builder()
+            .datasetUri("file:///tmp/__lance_nonexistent_for_executor_gate_test__")
+            .executorCredentialRefresh(false)
+            .build();
+
+    LanceInputPartition partition =
+        new LanceInputPartition(
+            new StructType(),
+            0,
+            null,
+            readOptions,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            "test-scan",
+            Collections.emptyMap(),
+            RecordingNamespace.class.getName(),
+            Collections.emptyMap(),
+            null);
+
+    assertThrows(RuntimeException.class, () -> LanceFragmentScanner.create(0, partition));
+
+    assertNull(
+        readOptions.getNamespace(),
+        "executor_credential_refresh=false must skip namespace rebuild on the executor");
+    assertEquals(
+        0,
+        RecordingNamespace.INITIALIZE_CALLS.get(),
+        "executor_credential_refresh=false must not load or initialize the namespace impl");
+  }
+
+  /**
+   * Public, top-level-by-FQCN, no-arg {@link LanceNamespace} so that {@link
+   * LanceNamespace#connect(String, Map, BufferAllocator)} can resolve it via {@code Class.forName}
+   * if the executor branch is (incorrectly) taken.
+   */
+  public static class RecordingNamespace implements LanceNamespace {
+    static final AtomicInteger INITIALIZE_CALLS = new AtomicInteger();
+
+    public RecordingNamespace() {}
+
+    @Override
+    public void initialize(Map<String, String> properties, BufferAllocator allocator) {
+      INITIALIZE_CALLS.incrementAndGet();
+    }
+
+    @Override
+    public String namespaceId() {
+      return "recording";
+    }
   }
 }

@@ -157,8 +157,11 @@ object LanceArrowUtils {
         // Widen float16 to float32 for Spark (Spark has no native float16 type)
         FloatType
       case _: ArrowType.Time =>
-        // TimeType is Spark 4.1+ only. Use reflection to create TimeType if available,
-        // fall back to LongType (raw nanoseconds) on older Spark versions.
+        // Spark's own ArrowUtils accepts only Time(NANOSECOND, 64); other units throw.
+        // We accept all four Arrow Time variants (Sec/Milli/Micro/Nano) and rescale to nanos
+        // in TimeUnitAccessor so Lance datasets written by non-Spark producers (Arrow,
+        // DataFusion, Polars) round-trip cleanly.
+        // TimeType is Spark 4.1+ only; fall back to LongType (raw nanos) on older versions.
         TimeUtils.resolveSparkTimeType()
       case d: ArrowType.Decimal if d.getBitWidth == 256 =>
         // Spark only supports 128-bit decimal (precision <= 38).

@@ -341,6 +341,27 @@ public class MinioTpcdsBenchmark {
     return "s3a://" + BUCKET + "/" + PREFIX + "/store_sales";
   }
 
+  /** Generic helpers for the type-coverage tables (q5+). store_sales keeps its bespoke
+   *  {@code _bp128_dispatch.lance} basename for back-compat with prior runs; everything
+   *  else uses the {@code _bp128} suffix produced by {@link MultiTableSetup}. */
+  private static String lanceBp128Uri(String table) {
+    return "s3://" + BUCKET + "/" + PREFIX + "/" + table + "_bp128.lance";
+  }
+
+  private static String parquetUri(String table) {
+    return "s3a://" + BUCKET + "/" + PREFIX + "/" + table;
+  }
+
+  /** Synthetic table URIs (batch 2: types not present in TPC-DS). Stored under
+   *  the {@code synth/} prefix to keep them separate from TPC-DS data. */
+  private static String synthLanceUri(String table) {
+    return "s3://" + BUCKET + "/synth/" + table + "_bp128.lance";
+  }
+
+  private static String synthParquetUri(String table) {
+    return "s3a://" + BUCKET + "/synth/" + table;
+  }
+
   private static void registerView(SparkSession spark, String format) {
     if ("lance".equals(format) || "lance_bp128".equals(format)) {
       String uri = "lance_bp128".equals(format) ? lanceBp128Uri() : lanceUri();
@@ -364,6 +385,53 @@ public class MinioTpcdsBenchmark {
     }
   }
 
+  /** Register a non-store_sales table (q5+) as a temp view under its plain name. */
+  private static void registerSecondaryView(SparkSession spark, String format, String table) {
+    if ("lance_bp128".equals(format)) {
+      spark.read()
+          .format("lance")
+          .option("block_size", "1048576")
+          .option("batch_readahead", "16").option("batch_size", "65536")
+          .option("aws_access_key_id", ACCESS_KEY)
+          .option("aws_secret_access_key", SECRET_KEY)
+          .option("aws_endpoint", PROXY_ENDPOINT)
+          .option("aws_region", "us-east-1")
+          .option("aws_virtual_hosted_style_request", "false")
+          .option("allow_http", "true")
+          .load(lanceBp128Uri(table))
+          .createOrReplaceTempView(table);
+    } else {
+      spark.read()
+          .format("parquet")
+          .load(parquetUri(table))
+          .createOrReplaceTempView(table);
+    }
+  }
+
+  /** Register a synthetic table (batch 2) as a temp view named {@code synth_<table>}. */
+  private static void registerSynthView(SparkSession spark, String format, String table) {
+    String view = "synth_" + table;
+    if ("lance_bp128".equals(format)) {
+      spark.read()
+          .format("lance")
+          .option("block_size", "1048576")
+          .option("batch_readahead", "16").option("batch_size", "65536")
+          .option("aws_access_key_id", ACCESS_KEY)
+          .option("aws_secret_access_key", SECRET_KEY)
+          .option("aws_endpoint", PROXY_ENDPOINT)
+          .option("aws_region", "us-east-1")
+          .option("aws_virtual_hosted_style_request", "false")
+          .option("allow_http", "true")
+          .load(synthLanceUri(table))
+          .createOrReplaceTempView(view);
+    } else {
+      spark.read()
+          .format("parquet")
+          .load(synthParquetUri(table))
+          .createOrReplaceTempView(view);
+    }
+  }
+
   private static void execute(SparkSession spark, String sql) {
     spark.sql(sql).write().format("noop").mode("overwrite").save();
   }
@@ -374,13 +442,47 @@ public class MinioTpcdsBenchmark {
 
   @State(Scope.Benchmark)
   public static class StoreSalesState {
-    @Param({"lance", "lance_bp128", "parquet"})
+    @Param({"lance_bp128", "parquet"})
     public String format;
 
     @Setup(Level.Trial)
     public void setup() throws IOException {
       new TpcdsSession().init();
       registerView(TpcdsSession.get(), format);
+    }
+  }
+
+  /** State for q5+ — registers all six tables (store_sales + 5 dim/return tables) under
+   *  their plain names so JOIN queries (q12) can reference both sides. */
+  @State(Scope.Benchmark)
+  public static class TypeCovState {
+    @Param({"lance_bp128", "parquet"})
+    public String format;
+
+    @Setup(Level.Trial)
+    public void setup() throws IOException {
+      new TpcdsSession().init();
+      SparkSession spark = TpcdsSession.get();
+      registerView(spark, format);
+      for (String table : new String[] {
+          "customer", "customer_address", "item", "date_dim", "store_returns"}) {
+        registerSecondaryView(spark, format, table);
+      }
+    }
+  }
+
+  /** State for q13+ — registers the two synthetic tables (numeric, temporal). */
+  @State(Scope.Benchmark)
+  public static class SyntheticState {
+    @Param({"lance_bp128", "parquet"})
+    public String format;
+
+    @Setup(Level.Trial)
+    public void setup() throws IOException {
+      new TpcdsSession().init();
+      SparkSession spark = TpcdsSession.get();
+      registerSynthView(spark, format, "numeric");
+      registerSynthView(spark, format, "temporal");
     }
   }
 
@@ -437,5 +539,155 @@ public class MinioTpcdsBenchmark {
         "SELECT sum(ss_wholesale_cost), sum(ss_list_price), sum(ss_sales_price), "
             + "sum(ss_ext_sales_price), sum(ss_net_paid), sum(ss_net_profit) "
             + "FROM store_sales");
+  }
+
+  // ========================================================================
+  // Q5 — int32 high-cardinality count distinct on PK column. Exercises the
+  // dictionary-build cost during fullscan + hashAgg of int values (no
+  // decimal/varchar overhead). customer SF=100 is ~2 M rows.
+  // ========================================================================
+
+  @Benchmark
+  public void q5IntCountDistinct(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT count(distinct c_customer_sk) FROM customer");
+  }
+
+  // ========================================================================
+  // Q6 — two decimal(7,2) columns summed on store_returns (~28 M rows, 10x
+  // smaller than store_sales). Mirrors q4's decimal hot path on a different
+  // table; sr_fee + sr_return_tax both go through the same low-precision
+  // u32-narrow bp128 kernel.
+  // ========================================================================
+
+  @Benchmark
+  public void q6DecimalReturnsSum(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT sum(sr_fee), sum(sr_return_tax) FROM store_returns");
+  }
+
+  // ========================================================================
+  // Q7 — varchar(50) high-cardinality stress. count(distinct i_product_name)
+  // forces a fullscan + hash-agg over BinaryMiniBlock-encoded data. item ~200K
+  // rows, but every name is distinct, so this measures string materialization
+  // throughput more than aggregation cost.
+  // ========================================================================
+
+  @Benchmark
+  public void q7VarcharDistinct(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT count(distinct i_product_name) FROM item");
+  }
+
+  // ========================================================================
+  // Q8 — varchar equality filter. count(*) WHERE c_first_name='James' on
+  // customer (~2 M rows). Evaluates predicate pushdown + string compare.
+  // 'James' is one of the more common first names in dsdgen output.
+  // ========================================================================
+
+  @Benchmark
+  public void q8VarcharFilter(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT count(*) FROM customer WHERE c_first_name = 'James'");
+  }
+
+  // ========================================================================
+  // Q9 — char(2) low-cardinality GROUP BY. customer_address.ca_state has
+  // ~50 distinct values across ~1 M rows. Tests fixed-width string materialization
+  // + hash-agg with small group set (no spill).
+  // ========================================================================
+
+  @Benchmark
+  public void q9CharGroupby(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT ca_state, count(*) FROM customer_address GROUP BY ca_state");
+  }
+
+  // ========================================================================
+  // Q10 — date32 range filter. count(*) WHERE d_date BETWEEN ... over
+  // date_dim (~73 K rows). Lance stores date as i32 days-since-epoch and
+  // routes through bp128 u32-narrow; Parquet stores as INT32-DATE.
+  // ========================================================================
+
+  @Benchmark
+  public void q10DateRange(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT count(*) FROM date_dim "
+            + "WHERE d_date BETWEEN DATE'1999-01-01' AND DATE'2002-12-31'");
+  }
+
+  // ========================================================================
+  // Q11 — int32 low-cardinality GROUP BY on date_dim.d_year. ~5 distinct
+  // years, ~73 K rows. Tests the agg path on tiny dimension table — exposes
+  // setup/teardown overhead per query.
+  // ========================================================================
+
+  @Benchmark
+  public void q11DateGroupby(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT d_year, count(*) FROM date_dim GROUP BY d_year");
+  }
+
+  // ========================================================================
+  // Q12 — typical OLAP star-join: store_sales × date_dim on int32 surrogate
+  // key. SUM(ss_quantity) GROUP BY d_year. Exercises both fact and dim tables
+  // simultaneously; broadcast join on date_dim (small) is the expected plan.
+  // ========================================================================
+
+  @Benchmark
+  public void q12JoinIntPk(TypeCovState state) {
+    execute(TpcdsSession.get(),
+        "SELECT d_year, sum(ss_quantity) "
+            + "FROM store_sales JOIN date_dim ON ss_sold_date_sk = d_date_sk "
+            + "GROUP BY d_year");
+  }
+
+  // ========================================================================
+  // Q13-Q19 — synthetic types not present in TPC-DS. 30 M-row tables.
+  // Each query is a simple aggregation isolating one logical type.
+  // ========================================================================
+
+  @Benchmark
+  public void q13Int64Sum(SyntheticState state) {
+    // max() instead of sum() to avoid Spark ANSI overflow on 30M × ~5e14 → > long range.
+    // Read path is identical: i64 column fullscan + scalar reduce.
+    execute(TpcdsSession.get(), "SELECT max(v_int64) FROM synth_numeric");
+  }
+
+  @Benchmark
+  public void q14DoubleSum(SyntheticState state) {
+    execute(TpcdsSession.get(), "SELECT sum(v_double) FROM synth_numeric");
+  }
+
+  @Benchmark
+  public void q15FloatSum(SyntheticState state) {
+    execute(TpcdsSession.get(), "SELECT sum(v_float) FROM synth_numeric");
+  }
+
+  @Benchmark
+  public void q16Decimal18Sum(SyntheticState state) {
+    execute(TpcdsSession.get(), "SELECT sum(v_decimal_18_2) FROM synth_numeric");
+  }
+
+  // q17 forces wide-bit-width path: data has unscaled values up to ~10^36 ≈ 120 bits,
+  // which routes through bp128 SequentialU128 / Memcpy kernel.
+  // Uses max() instead of sum() because 30M × 10^36 overflows decimal(38,18) under ANSI mode.
+  @Benchmark
+  public void q17Decimal38Sum(SyntheticState state) {
+    execute(TpcdsSession.get(), "SELECT max(v_decimal_38_18) FROM synth_numeric");
+  }
+
+  @Benchmark
+  public void q18TimestampRange(SyntheticState state) {
+    execute(TpcdsSession.get(),
+        "SELECT count(*) FROM synth_temporal "
+            + "WHERE v_timestamp BETWEEN TIMESTAMP'2018-01-01 00:00:00' "
+            + "AND TIMESTAMP'2020-01-01 00:00:00'");
+  }
+
+  @Benchmark
+  public void q19BooleanCount(SyntheticState state) {
+    execute(TpcdsSession.get(),
+        "SELECT sum(CASE WHEN v_boolean THEN 1 ELSE 0 END) FROM synth_numeric");
   }
 }

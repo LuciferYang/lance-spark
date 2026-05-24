@@ -132,8 +132,14 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
       System.err.printf(
           "[lance-fixed-cost] table=%s frag=%d open=%dms scan_create=%dms first_batch=%dms "
               + "subsequent=%dms (n=%d, avg=%dus)%n",
-          shortUri, fragmentScanner.fragmentId(),
-          openMs, scanMs, firstMs, subMs, subCount, subAvgMicros);
+          shortUri,
+          fragmentScanner.fragmentId(),
+          openMs,
+          scanMs,
+          firstMs,
+          subMs,
+          subCount,
+          subAvgMicros);
     }
     try {
       if (currentColumnarBatch != null) {

@@ -38,6 +38,9 @@ public class BatchSingleShotRunner {
   /** Insertion order = run order. */
   private static final Map<String, String> QUERIES = new LinkedHashMap<>();
   static {
+    QUERIES.put("q1", "SELECT sum(ss_quantity) FROM store_sales");
+    QUERIES.put("q4", "SELECT sum(ss_wholesale_cost), sum(ss_list_price), sum(ss_sales_price), "
+        + "sum(ss_ext_sales_price), sum(ss_net_paid), sum(ss_net_profit) FROM store_sales");
     QUERIES.put("q5", "SELECT count(distinct c_customer_sk) FROM customer");
     QUERIES.put("q6", "SELECT sum(sr_fee), sum(sr_return_tax) FROM store_returns");
     QUERIES.put("q7", "SELECT count(distinct i_product_name) FROM item");

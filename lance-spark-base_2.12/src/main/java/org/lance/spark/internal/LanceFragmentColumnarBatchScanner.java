@@ -38,10 +38,16 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
+  private static final boolean PROBE_FIXED_COST =
+      Boolean.getBoolean("lance.spark.probe_fixed_cost");
+
   private final LanceFragmentScanner fragmentScanner;
   private final ArrowReader arrowReader;
   private ColumnarBatch currentColumnarBatch;
   private long lastBatchLoadTimeNs;
+  private long firstBatchLoadTimeNs = -1;
+  private long subsequentBatchTotalNs;
+  private int batchCount;
 
   public LanceFragmentColumnarBatchScanner(
       LanceFragmentScanner fragmentScanner, ArrowReader arrowReader) {
@@ -59,6 +65,14 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
     long start = System.nanoTime();
     boolean hasNext = arrowReader.loadNextBatch();
     lastBatchLoadTimeNs = System.nanoTime() - start;
+    if (PROBE_FIXED_COST) {
+      if (firstBatchLoadTimeNs < 0) {
+        firstBatchLoadTimeNs = lastBatchLoadTimeNs;
+      } else {
+        subsequentBatchTotalNs += lastBatchLoadTimeNs;
+      }
+      batchCount++;
+    }
 
     if (hasNext) {
       VectorSchemaRoot root = arrowReader.getVectorSchemaRoot();
@@ -106,6 +120,21 @@ public class LanceFragmentColumnarBatchScanner implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    if (PROBE_FIXED_COST) {
+      long openMs = fragmentScanner.getDatasetOpenTimeNs() / 1_000_000L;
+      long scanMs = fragmentScanner.getScannerCreateTimeNs() / 1_000_000L;
+      long firstMs = firstBatchLoadTimeNs > 0 ? firstBatchLoadTimeNs / 1_000_000L : -1;
+      long subMs = subsequentBatchTotalNs / 1_000_000L;
+      int subCount = Math.max(0, batchCount - 1);
+      long subAvgMicros = subCount > 0 ? subsequentBatchTotalNs / 1_000L / subCount : -1;
+      String uri = fragmentScanner.getInputPartition().getReadOptions().getDatasetUri();
+      String shortUri = uri == null ? "?" : uri.substring(uri.lastIndexOf('/') + 1);
+      System.err.printf(
+          "[lance-fixed-cost] table=%s frag=%d open=%dms scan_create=%dms first_batch=%dms "
+              + "subsequent=%dms (n=%d, avg=%dus)%n",
+          shortUri, fragmentScanner.fragmentId(),
+          openMs, scanMs, firstMs, subMs, subCount, subAvgMicros);
+    }
     try {
       if (currentColumnarBatch != null) {
         currentColumnarBatch.close();

@@ -34,6 +34,7 @@ import java.util.stream.Collectors;
 
 public class LanceFragmentScanner implements AutoCloseable {
   private final Dataset dataset;
+  private final boolean datasetIsCached;
   private final LanceScanner scanner;
   private final int fragmentId;
   private final boolean withFragemtId;
@@ -43,6 +44,7 @@ public class LanceFragmentScanner implements AutoCloseable {
 
   private LanceFragmentScanner(
       Dataset dataset,
+      boolean datasetIsCached,
       LanceScanner scanner,
       int fragmentId,
       boolean withFragmentId,
@@ -50,6 +52,7 @@ public class LanceFragmentScanner implements AutoCloseable {
       long datasetOpenTimeNs,
       long scannerCreateTimeNs) {
     this.dataset = dataset;
+    this.datasetIsCached = datasetIsCached;
     this.scanner = scanner;
     this.fragmentId = fragmentId;
     this.withFragemtId = withFragmentId;
@@ -60,6 +63,7 @@ public class LanceFragmentScanner implements AutoCloseable {
 
   public static LanceFragmentScanner create(int fragmentId, LanceInputPartition inputPartition) {
     Dataset dataset = null;
+    boolean datasetIsCached = false;
     LanceScanner lanceScanner = null;
     try {
       LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
@@ -84,10 +88,9 @@ public class LanceFragmentScanner implements AutoCloseable {
         }
       }
       long dsOpenStart = System.nanoTime();
-      dataset =
-          Utils.openDatasetBuilder(readOptions)
-              .initialStorageOptions(inputPartition.getInitialStorageOptions())
-              .build();
+      LanceDatasetCache.OpenResult openResult = LanceDatasetCache.getOrOpen(inputPartition);
+      dataset = openResult.dataset();
+      datasetIsCached = openResult.cached();
       long dsOpenTimeNs = System.nanoTime() - dsOpenStart;
       Fragment fragment = dataset.getFragment(fragmentId);
       if (fragment == null) {
@@ -138,6 +141,7 @@ public class LanceFragmentScanner implements AutoCloseable {
       long scanCreateTimeNs = System.nanoTime() - scanCreateStart;
       return new LanceFragmentScanner(
           dataset,
+          datasetIsCached,
           lanceScanner,
           fragmentId,
           withFragmentId,
@@ -152,7 +156,10 @@ public class LanceFragmentScanner implements AutoCloseable {
           throwable.addSuppressed(closeError);
         }
       }
-      if (dataset != null) {
+      // Skip dataset.close() when the dataset came from the cache — other
+      // fragment readers may still hold references and a close here would
+      // corrupt them. Cache-owned datasets are never closed by callers.
+      if (dataset != null && !datasetIsCached) {
         try {
           dataset.close();
         } catch (Throwable closeError) {
@@ -180,7 +187,11 @@ public class LanceFragmentScanner implements AutoCloseable {
         primary = t;
       }
     }
-    if (dataset != null) {
+    // Cache-owned datasets must not be closed by per-fragment callers; the
+    // process-wide LanceDatasetCache holds them for the JVM lifetime so that
+    // subsequent fragments (and queries) hit the cache instead of paying ~5 ms
+    // per fragment for native Dataset construction.
+    if (dataset != null && !datasetIsCached) {
       try {
         dataset.close();
       } catch (Throwable t) {

@@ -178,6 +178,82 @@ public class LanceScanTest {
     }
   }
 
+  // --- partition coalesce ---
+  //
+  // The packaged test fixture (test_dataset1) was written by an older lance version that does not
+  // record DataFile.getFileSizeBytes(); the coalescer therefore falls back to 1-fragment-per-split
+  // for it. These integration tests assert the wiring (sysprop overrides + null-size fallback)
+  // rather than the bin-packing math itself, which is covered exhaustively by
+  // {@link LancePartitionCoalescerTest}.
+
+  @Test
+  public void testCoalesceFallsBackToOnePerSplitWhenSizesUnknown() {
+    // Default sysprops, fixture has null fileSizeBytes → coalescer must return 1:1.
+    LanceScan scan = buildScan();
+    InputPartition[] partitions = scan.planInputPartitions();
+    assertTrue(partitions.length > 0);
+    for (InputPartition p : partitions) {
+      LanceInputPartition lip = (LanceInputPartition) p;
+      assertEquals(
+          1,
+          lip.getLanceSplit().getFragments().size(),
+          "Coalesce must fall back to 1:1 when fragment byte sizes are unknown");
+    }
+  }
+
+  @Test
+  public void testCoalesceDisabledKeepsOneFragmentPerPartition() {
+    String prev = System.getProperty("lance.spark.partition_coalesce_enabled");
+    System.setProperty("lance.spark.partition_coalesce_enabled", "false");
+    try {
+      LanceScan scan = buildScan();
+      InputPartition[] partitions = scan.planInputPartitions();
+      assertTrue(partitions.length > 0);
+      for (InputPartition p : partitions) {
+        LanceInputPartition lip = (LanceInputPartition) p;
+        assertEquals(
+            1,
+            lip.getLanceSplit().getFragments().size(),
+            "Coalesce disabled — each partition must hold a single fragment");
+      }
+    } finally {
+      if (prev == null) {
+        System.clearProperty("lance.spark.partition_coalesce_enabled");
+      } else {
+        System.setProperty("lance.spark.partition_coalesce_enabled", prev);
+      }
+    }
+  }
+
+  @Test
+  public void testCoalesceMaxBytesZeroDisablesCoalescing() {
+    // maxPartitionBytes=0 disables coalescing entirely (the coalescer short-circuits to the input).
+    String prevEnabled = System.getProperty("lance.spark.partition_coalesce_enabled");
+    String prevMax = System.getProperty("lance.spark.max_partition_bytes");
+    System.setProperty("lance.spark.partition_coalesce_enabled", "true");
+    System.setProperty("lance.spark.max_partition_bytes", "0");
+    try {
+      LanceScan scan = buildScan();
+      InputPartition[] partitions = scan.planInputPartitions();
+      assertTrue(partitions.length > 0);
+      for (InputPartition p : partitions) {
+        LanceInputPartition lip = (LanceInputPartition) p;
+        assertEquals(1, lip.getLanceSplit().getFragments().size());
+      }
+    } finally {
+      if (prevEnabled == null) {
+        System.clearProperty("lance.spark.partition_coalesce_enabled");
+      } else {
+        System.setProperty("lance.spark.partition_coalesce_enabled", prevEnabled);
+      }
+      if (prevMax == null) {
+        System.clearProperty("lance.spark.max_partition_bytes");
+      } else {
+        System.setProperty("lance.spark.max_partition_bytes", prevMax);
+      }
+    }
+  }
+
   @Test
   public void testPartitionKeyReturnsEmptyRowWithoutPartitionInfo() {
     // Without partition info, partition key returns an empty row

@@ -20,6 +20,7 @@ import org.lance.spark.read.metric.LanceCustomMetrics;
 import org.lance.spark.utils.Optional;
 
 import org.apache.arrow.util.Preconditions;
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.expressions.Expression;
 import org.apache.spark.sql.connector.expressions.FieldReference;
@@ -167,6 +168,12 @@ public class LanceScan
     // because Spark still keeps a global CollectLimit on top (isPartiallyPushed = true).
     prunedSplits = pruneByLimit(prunedSplits, planResult.getFragmentRowCounts());
 
+    // Coalesce single-fragment splits into byte-bounded multi-fragment splits, mirroring Spark's
+    // file-source partition planning. This is the fix for the V2 1:1 fragment→partition mapping
+    // that produced 305 Spark tasks for store_sales (vs parquet's ~12) — see
+    // docs/profiles/2026-05-25-cluster-vs-local-c1-validation.md §3a.
+    prunedSplits = coalesceByTargetBytes(prunedSplits, planResult.getFragmentByteSizes());
+
     // Capture as effectively final for use in lambda
     final List<LanceSplit> finalSplits = prunedSplits;
 
@@ -204,6 +211,104 @@ public class LanceScan
 
     this.numPartitions = result.length;
     return result;
+  }
+
+  /**
+   * Coalesces single-fragment splits into byte-bounded multi-fragment splits, mirroring Spark's
+   * {@code FilePartition.getFilePartitions} behaviour for parquet/orc.
+   *
+   * <p>Skipped when:
+   *
+   * <ul>
+   *   <li>Storage-partitioned join is active ({@code partitionInfo != null}) — multi-fragment
+   *       splits would break the {@link KeyGroupedPartitioning} 1:1 contract.
+   *   <li>Coalescing is explicitly disabled via {@code -Dlance.spark.partition_coalesce_enabled=
+   *       false}.
+   *   <li>The target bytes value resolves to a non-positive number.
+   * </ul>
+   *
+   * <p>Source of {@code maxPartitionBytes} (in priority order): system property {@code
+   * lance.spark.max_partition_bytes} → Spark conf {@code spark.sql.files.maxPartitionBytes} → 128
+   * MiB. Source of {@code openCostInBytes}: system property {@code lance.spark.open_cost_in_bytes}
+   * → Spark conf {@code spark.sql.files.openCostInBytes} → 4 MiB.
+   */
+  private List<LanceSplit> coalesceByTargetBytes(
+      List<LanceSplit> splits, java.util.Map<Integer, Long> fragmentByteSizes) {
+    if (splits.isEmpty() || partitionInfo != null) {
+      return splits;
+    }
+    if (!Boolean.parseBoolean(
+        System.getProperty("lance.spark.partition_coalesce_enabled", "true"))) {
+      return splits;
+    }
+    long maxBytes =
+        readLongConf(
+            "lance.spark.max_partition_bytes",
+            "spark.sql.files.maxPartitionBytes",
+            128L * 1024L * 1024L);
+    long openCost =
+        readLongConf(
+            "lance.spark.open_cost_in_bytes",
+            "spark.sql.files.openCostInBytes",
+            4L * 1024L * 1024L);
+    if (maxBytes <= 0) {
+      return splits;
+    }
+    List<LanceSplit> coalesced =
+        LancePartitionCoalescer.coalesce(splits, fragmentByteSizes, maxBytes, openCost);
+    if (coalesced.size() < splits.size()) {
+      LOG.debug(
+          "Coalesced {} fragment splits into {} byte-bounded splits "
+              + "(maxBytes={}, openCost={})",
+          splits.size(),
+          coalesced.size(),
+          maxBytes,
+          openCost);
+    }
+    return coalesced;
+  }
+
+  /**
+   * Resolves a {@code long} configuration value: prefers the JVM system property override, then
+   * falls back to the active SparkSession conf, then to {@code defaultBytes}. The Spark conf value
+   * may be a plain number or include a byte suffix (e.g. {@code "128MB"}); both are accepted.
+   */
+  private static long readLongConf(String sysPropKey, String sparkConfKey, long defaultBytes) {
+    String sysProp = System.getProperty(sysPropKey);
+    if (sysProp != null && !sysProp.isEmpty()) {
+      try {
+        return Long.parseLong(sysProp.trim());
+      } catch (NumberFormatException e) {
+        LOG.warn("Ignoring non-numeric system property {}={}", sysPropKey, sysProp);
+      }
+    }
+    try {
+      SparkSession spark = SparkSession.active();
+      String value = spark.conf().get(sparkConfKey, String.valueOf(defaultBytes));
+      return parseByteString(value, defaultBytes);
+    } catch (IllegalStateException noSession) {
+      return defaultBytes;
+    }
+  }
+
+  /**
+   * Parses Spark byte-string values like {@code "128m"} or plain numbers. Falls back to {@code
+   * defaultBytes} on any parse failure rather than aborting the scan.
+   */
+  private static long parseByteString(String value, long defaultBytes) {
+    if (value == null || value.isEmpty()) {
+      return defaultBytes;
+    }
+    try {
+      return org.apache.spark.network.util.JavaUtils.byteStringAsBytes(value);
+    } catch (RuntimeException e) {
+      try {
+        return Long.parseLong(value.trim());
+      } catch (NumberFormatException e2) {
+        LOG.warn("Could not parse byte-string '{}', using default {}", value, defaultBytes);
+        return defaultBytes;
+      }
+    }
   }
 
   /**

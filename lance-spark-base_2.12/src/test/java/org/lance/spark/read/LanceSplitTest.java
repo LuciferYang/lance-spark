@@ -55,6 +55,26 @@ public class LanceSplitTest {
     }
   }
 
+  @Test
+  public void testPlanScanReturnsFragmentByteSizes() {
+    LanceSplit.ScanPlanResult result = LanceSplit.planScan(TestUtils.TestTable1Config.readOptions);
+    // Every fragment must have a byte-size entry (value may be null if the underlying DataFile
+    // pre-dates fileSizeBytes tracking — the packaged test fixture is one such case, which is
+    // exactly why the coalescer falls back to 1:1 when sizes are unknown).
+    assertFalse(result.getFragmentByteSizes().isEmpty());
+    for (LanceSplit split : result.getSplits()) {
+      for (int fragmentId : split.getFragments()) {
+        assertTrue(
+            result.getFragmentByteSizes().containsKey(fragmentId),
+            "Missing byte size entry for fragment " + fragmentId);
+        Long size = result.getFragmentByteSizes().get(fragmentId);
+        if (size != null) {
+          assertTrue(size > 0, "Byte size should be positive for fragment " + fragmentId);
+        }
+      }
+    }
+  }
+
   @SuppressWarnings("deprecation")
   @Test
   public void testGenerateLanceSplitsDeprecated() {

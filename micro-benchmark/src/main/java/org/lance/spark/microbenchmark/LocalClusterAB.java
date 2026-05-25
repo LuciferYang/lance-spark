@@ -65,6 +65,11 @@ public class LocalClusterAB {
   }
 
   private static String executorJavaOptions() {
+    String agentPath = System.getProperty("lance.spark.profile_agentpath", "");
+    String agentArg =
+        agentPath.isEmpty()
+            ? ""
+            : "-agentpath:" + agentPath;
     return String.join(" ",
         "--add-opens=java.base/java.lang=ALL-UNNAMED",
         "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
@@ -84,8 +89,11 @@ public class LocalClusterAB {
         "-Darrow.enable_unsafe_memory_access=true",
         "-Dlance.spark.dataset_cache_enabled="
             + System.getProperty("lance.spark.dataset_cache_enabled", "true"),
+        "-Dlance.spark.partition_coalesce_enabled="
+            + System.getProperty("lance.spark.partition_coalesce_enabled", "true"),
         "-Dlance.spark.probe_fixed_cost="
-            + System.getProperty("lance.spark.probe_fixed_cost", "false"));
+            + System.getProperty("lance.spark.probe_fixed_cost", "false"),
+        agentArg);
   }
 
   public static void main(String[] args) {

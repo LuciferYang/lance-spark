@@ -24,7 +24,6 @@ import org.lance.schema.LanceField;
 import org.lance.spark.LanceConstant;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.utils.Optional;
-import org.lance.spark.utils.Utils;
 
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
@@ -83,6 +82,9 @@ public class LanceScanBuilder
 
   // Lazily opened dataset for reuse during scan building
   private Dataset lazyDataset = null;
+  // True when {@link #lazyDataset} came from {@link LanceDatasetCache} and must NOT be closed by
+  // this ScanBuilder. {@link LanceFragmentScanner} uses the same flag for the executor side.
+  private boolean lazyDatasetIsCached = false;
 
   /**
    * Initial storage options fetched from namespace.describeTable() on the driver. These are passed
@@ -115,20 +117,28 @@ public class LanceScanBuilder
 
   /**
    * Gets or opens a dataset for reuse during scan building. The dataset is lazily opened on first
-   * access and reused for subsequent calls.
+   * access and reused for subsequent calls. When the driver-side {@link
+   * org.lance.spark.internal.LanceDatasetCache} is enabled, the cached instance is reused across
+   * SQL executions and {@link #closeLazyDataset()} skips {@link Dataset#close()}.
    */
   private Dataset getOrOpenDataset() {
     if (lazyDataset == null) {
-      lazyDataset = Utils.openDatasetBuilder(readOptions).build();
+      org.lance.spark.internal.LanceDatasetCache.OpenResult open =
+          org.lance.spark.internal.LanceDatasetCache.getOrOpen(readOptions);
+      lazyDataset = open.dataset();
+      lazyDatasetIsCached = open.cached();
     }
     return lazyDataset;
   }
 
-  /** Closes the lazily opened dataset if it was opened. */
+  /** Closes the lazily opened dataset if it was opened directly (not from the cache). */
   private void closeLazyDataset() {
     if (lazyDataset != null) {
-      lazyDataset.close();
+      if (!lazyDatasetIsCached) {
+        lazyDataset.close();
+      }
       lazyDataset = null;
+      lazyDatasetIsCached = false;
     }
   }
 

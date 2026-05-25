@@ -14,6 +14,7 @@
 package org.lance.spark.internal;
 
 import org.lance.Dataset;
+import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.read.LanceInputPartition;
 import org.lance.spark.utils.Utils;
 
@@ -100,6 +101,32 @@ public final class LanceDatasetCache {
   }
 
   /**
+   * Driver-side overload: return a cached or freshly-opened {@link Dataset} for the dataset
+   * identity carried by these read options. Used by {@code LanceDataSource.inferSchema}, {@code
+   * LanceScanBuilder.getOrOpenDataset}, and {@code LanceSplit.planScan} so the driver doesn't
+   * reopen the dataset 3 times per SQL execution. Caller <em>must not</em> close the returned
+   * dataset when {@link OpenResult#cached()} is true.
+   *
+   * <p>Note that driver-side and executor-side cache entries live in <em>different</em> JVMs in
+   * cluster mode, so although the {@link Key} algorithms are slightly different (driver uses {@code
+   * readOptions.getStorageOptions()}; executor uses {@code
+   * inputPartition.getInitialStorageOptions()}), they never need to agree on a hash. In single-JVM
+   * (local) mode the storage-option maps usually match on a re-open, so the driver and executor
+   * paths organically share a cache entry — but correctness does not depend on that.
+   */
+  public static OpenResult getOrOpen(LanceSparkReadOptions readOptions) {
+    if (!isEnabled()) {
+      return new OpenResult(openDirect(readOptions), false);
+    }
+    Key key = Key.fromReadOptions(readOptions);
+    if (CACHE.size() >= maxSize() && !CACHE.containsKey(key)) {
+      return new OpenResult(openDirect(readOptions), false);
+    }
+    Dataset ds = CACHE.computeIfAbsent(key, k -> openDirect(readOptions));
+    return new OpenResult(ds, true);
+  }
+
+  /**
    * Test/diagnostics hook: drop all cached entries and close their datasets. Not safe to call while
    * readers are active.
    */
@@ -126,6 +153,10 @@ public final class LanceDatasetCache {
     return Utils.openDatasetBuilder(inputPartition.getReadOptions())
         .initialStorageOptions(inputPartition.getInitialStorageOptions())
         .build();
+  }
+
+  private static Dataset openDirect(LanceSparkReadOptions readOptions) {
+    return Utils.openDatasetBuilder(readOptions).build();
   }
 
   /** Carries both the {@link Dataset} and a flag for whether the caller owns the close. */
@@ -169,12 +200,28 @@ public final class LanceDatasetCache {
       // Hash the storage options as a stable, ordered sequence so cache keys
       // are deterministic and not sensitive to map iteration order.
       Map<String, String> opts = inputPartition.getInitialStorageOptions();
-      int hash = 0;
-      if (opts != null && !opts.isEmpty()) {
-        TreeMap<String, String> ordered = new TreeMap<>(opts);
-        hash = ordered.hashCode();
+      return new Key(uri, version, hashStorageOptions(opts));
+    }
+
+    /**
+     * Driver-side factory: derives the key from {@link LanceSparkReadOptions} directly. The
+     * storage-option hash uses {@code readOptions.getStorageOptions()} rather than {@code
+     * initialStorageOptions} (which only exists on the worker side after the driver has fetched
+     * credentials via the namespace). Hash sensitivity to map iteration order is removed by sorting
+     * via {@link TreeMap}.
+     */
+    static Key fromReadOptions(LanceSparkReadOptions readOptions) {
+      String uri = readOptions.getDatasetUri();
+      Integer version = readOptions.getVersion();
+      Map<String, String> opts = readOptions.getStorageOptions();
+      return new Key(uri, version, hashStorageOptions(opts));
+    }
+
+    private static int hashStorageOptions(Map<String, String> opts) {
+      if (opts == null || opts.isEmpty()) {
+        return 0;
       }
-      return new Key(uri, version, hash);
+      return new TreeMap<>(opts).hashCode();
     }
 
     @Override

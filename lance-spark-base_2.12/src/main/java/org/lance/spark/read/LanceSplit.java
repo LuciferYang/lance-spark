@@ -17,7 +17,6 @@ import org.lance.Dataset;
 import org.lance.Fragment;
 import org.lance.fragment.DataFile;
 import org.lance.spark.LanceSparkReadOptions;
-import org.lance.spark.utils.Utils;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -99,7 +98,10 @@ public class LanceSplit implements Serializable {
    * version. The resolved version should be passed to workers to ensure snapshot isolation.
    */
   public static ScanPlanResult planScan(LanceSparkReadOptions readOptions) {
-    try (Dataset dataset = Utils.openDatasetBuilder(readOptions).build()) {
+    org.lance.spark.internal.LanceDatasetCache.OpenResult open =
+        org.lance.spark.internal.LanceDatasetCache.getOrOpen(readOptions);
+    Dataset dataset = open.dataset();
+    try {
       List<Fragment> fragments = dataset.getFragments();
       List<LanceSplit> splits = new ArrayList<>(fragments.size());
       Map<Integer, Long> fragmentRowCounts = new HashMap<>(fragments.size());
@@ -112,6 +114,10 @@ public class LanceSplit implements Serializable {
       }
       long resolvedVersion = dataset.getVersion().getId();
       return new ScanPlanResult(splits, resolvedVersion, fragmentRowCounts, fragmentByteSizes);
+    } finally {
+      if (!open.cached()) {
+        dataset.close();
+      }
     }
   }
 

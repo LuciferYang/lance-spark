@@ -164,4 +164,89 @@ class LanceDatasetCacheTest {
     // Identity check on the cached() flag — boolean field, not a reference.
     assertTrue(r.cached());
   }
+
+  // ---------- Driver-side overload (Key.fromReadOptions) ----------
+
+  @Test
+  void keyFromReadOptionsCollidesAcrossOpensWithSameUri() {
+    // Driver-side cache identity contract: two LanceSparkReadOptions instances with the same
+    // URI/version/storageOptions must produce equal Keys so the cache returns the same Dataset.
+    org.lance.spark.LanceSparkReadOptions a =
+        org.lance.spark.LanceSparkReadOptions.from("s3://bucket/table.lance");
+    org.lance.spark.LanceSparkReadOptions b =
+        org.lance.spark.LanceSparkReadOptions.from("s3://bucket/table.lance");
+    assertEquals(
+        LanceDatasetCache.Key.fromReadOptions(a), LanceDatasetCache.Key.fromReadOptions(b));
+    assertEquals(
+        LanceDatasetCache.Key.fromReadOptions(a).hashCode(),
+        LanceDatasetCache.Key.fromReadOptions(b).hashCode());
+  }
+
+  @Test
+  void keyFromReadOptionsDiffersByUri() {
+    org.lance.spark.LanceSparkReadOptions a =
+        org.lance.spark.LanceSparkReadOptions.from("s3://bucket/a.lance");
+    org.lance.spark.LanceSparkReadOptions b =
+        org.lance.spark.LanceSparkReadOptions.from("s3://bucket/b.lance");
+    assertNotEquals(
+        LanceDatasetCache.Key.fromReadOptions(a), LanceDatasetCache.Key.fromReadOptions(b));
+  }
+
+  @Test
+  void keyFromReadOptionsIgnoresStorageOptionMapOrder() {
+    // TreeMap ordering must make the hash deterministic regardless of insertion order.
+    java.util.Map<String, String> orderA = new java.util.LinkedHashMap<>();
+    orderA.put("aws_access_key_id", "aaa");
+    orderA.put("aws_endpoint", "http://localhost:9000");
+    java.util.Map<String, String> orderB = new java.util.LinkedHashMap<>();
+    orderB.put("aws_endpoint", "http://localhost:9000");
+    orderB.put("aws_access_key_id", "aaa");
+
+    org.lance.spark.LanceSparkReadOptions a =
+        org.lance.spark.LanceSparkReadOptions.builder()
+            .datasetUri("s3://bucket/x.lance")
+            .storageOptions(orderA)
+            .build();
+    org.lance.spark.LanceSparkReadOptions b =
+        org.lance.spark.LanceSparkReadOptions.builder()
+            .datasetUri("s3://bucket/x.lance")
+            .storageOptions(orderB)
+            .build();
+    assertEquals(
+        LanceDatasetCache.Key.fromReadOptions(a), LanceDatasetCache.Key.fromReadOptions(b));
+    assertEquals(
+        LanceDatasetCache.Key.fromReadOptions(a).hashCode(),
+        LanceDatasetCache.Key.fromReadOptions(b).hashCode());
+  }
+
+  @Test
+  void keyFromReadOptionsDiffersByStorageOptionContent() {
+    java.util.Map<String, String> aOpts = new java.util.HashMap<>();
+    aOpts.put("aws_access_key_id", "aaa");
+    java.util.Map<String, String> bOpts = new java.util.HashMap<>();
+    bOpts.put("aws_access_key_id", "bbb");
+
+    org.lance.spark.LanceSparkReadOptions a =
+        org.lance.spark.LanceSparkReadOptions.builder()
+            .datasetUri("s3://bucket/x.lance")
+            .storageOptions(aOpts)
+            .build();
+    org.lance.spark.LanceSparkReadOptions b =
+        org.lance.spark.LanceSparkReadOptions.builder()
+            .datasetUri("s3://bucket/x.lance")
+            .storageOptions(bOpts)
+            .build();
+    assertNotEquals(
+        LanceDatasetCache.Key.fromReadOptions(a), LanceDatasetCache.Key.fromReadOptions(b));
+  }
+
+  @Test
+  void keyFromReadOptionsDistinguishesPinnedFromLatest() {
+    org.lance.spark.LanceSparkReadOptions latest =
+        org.lance.spark.LanceSparkReadOptions.from("s3://bucket/t.lance");
+    org.lance.spark.LanceSparkReadOptions pinned = latest.withVersion(7);
+    assertNotEquals(
+        LanceDatasetCache.Key.fromReadOptions(latest),
+        LanceDatasetCache.Key.fromReadOptions(pinned));
+  }
 }

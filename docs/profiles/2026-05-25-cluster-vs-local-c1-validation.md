@@ -46,21 +46,38 @@ cluster 模式 IPC + 序列化是 lance 和 parquet **共同**付出的成本，
 
 ### 3. 两个 cluster-only 退化点
 
-#### 3a. q3 filter+count 在 cluster 反转
+#### 3a. q3 filter+count 在 cluster 反转 — 根因：partition 数过多
 
 | 模式 | lance | parquet | L/P |
 |---|---|---|---|
 | local | 672 | 848 | **0.79×** ← lance 反超 |
 | cluster | 4935 | 1836 | **2.69×** ⚠ |
 
-local 模式 lance 比 parquet 快 21%，cluster 模式反转为 lance 慢 169%。parquet 在 cluster 下从 848 → 1836 = +116%，lance 从 672 → 4935 = +634%。**lance 对 cluster IPC 的敏感性远高于 parquet**，特别是 filter pushdown 路径。
+**B3 probe 结果（2026-05-25）**：q3 cluster 退化的根因不是 filter pushdown 本身，而是 **lance V2 datasource 没有 partition coalesce**。
 
-可能原因（待 probe 验证）：
-- Spark V2 filter pushdown 在 cluster 下分发 filter 表达式给每个 task，lance scanner 重复编译/重新评估
-- lance 在 fragment 级别没有 page-level statistics，无法剪枝；parquet 有 row-group min/max
-- cluster 模式 task 数变少（4 cores vs local[*] 全核），filter 工作并行度降低
+- store_sales_bp128_dispatch.lance 实际有 **305 fragments**
+- `LanceSplit.planScan()` 每个 fragment 1:1 映射成一个 Spark partition → **305 Spark tasks 每个 query**
+- parquet 同等数据集在 Spark 默认 `maxPartitionBytes=128MB` 下被 coalesce 成 **12 tasks**
+- cluster 4 executor cores 下：lance 每 executor 串行 76 tasks × ~30ms 任务调度开销 ≈ 2.3 s baseline cost；parquet 每 executor 仅 3 tasks × ~30ms ≈ 90 ms
 
-#### 3b. 小表（q11/q14）lance 3-5× 慢于 parquet
+q3 filter 选择性高 (~0.5%)，每 task 实际 decode 工作量小 → 任务调度开销占总 wall 比例大，因此 cluster ratio 飙到 2.69×。q1/q2/q4 也付同样的 task overhead，但 decode 工作量盖过了 IPC，cluster ratio 仅 1.00-1.59×。
+
+probe 数据（cluster q3 only，8 iters）：
+
+| 维度 | 数值 |
+|---|---|
+| 唯一 fragment ID 数 | 305 |
+| 每 frag 平均 batches | 111 |
+| `open` p95 | 0 ms（C1 cache 工作） |
+| `scan_create` p95 | 0 ms（filter compile 不是瓶颈） |
+| `first_batch` p95 | 8 ms |
+| `subsequent` p95 | 9 ms |
+
+filter compile / scan setup 全部 < 10ms p95，证明 lance 内部不是问题；问题完全在 Spark task scheduling 这层。
+
+**Fix candidate (B3 后续 follow-up)**：在 `LanceSplit.planScan` 中按目标 bytes-per-partition（mimic Spark `spark.sql.files.maxPartitionBytes=128MB`）把多个小 fragment 合并成一个 `LanceSplit` —— `LanceSplit` 已支持 `List<Integer> fragments`，基础设施现成的。预期把 305 → ~24 partitions，cluster q3 wall 应该从 4935 降到接近 parquet 1836 的水平。
+
+### 3b. 小表（q11/q14）lance 3-5× 慢于 parquet — 部分同根因 + page-stats 缺失
 
 | q | clu L/P |
 |---|---|

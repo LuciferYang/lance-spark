@@ -119,6 +119,40 @@ public class MinioTpcdsBenchmark {
   public static class TpcdsSession {
     private static volatile SparkSession SHARED;
 
+    /** Override master via {@code -Dspark.master.override=local-cluster[N,C,M]} to test
+     *  C1 dataset cache under per-executor JVM isolation. Default is local mode. */
+    private static String resolveMaster() {
+      return System.getProperty("spark.master.override", "local[*]");
+    }
+
+    /** Executor JVM args needed for Spark + Arrow to run when {@code local-cluster} forks executor
+     *  JVMs. Must mirror the @Fork(jvmArgs) of the driver so off-heap Arrow access and the lance
+     *  cache toggle behave consistently across driver and executors. */
+    private static String executorJavaOptions() {
+      return String.join(" ",
+          "--add-opens=java.base/java.lang=ALL-UNNAMED",
+          "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+          "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+          "--add-opens=java.base/java.io=ALL-UNNAMED",
+          "--add-opens=java.base/java.net=ALL-UNNAMED",
+          "--add-opens=java.base/java.nio=ALL-UNNAMED",
+          "--add-opens=java.base/java.util=ALL-UNNAMED",
+          "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+          "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+          "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+          "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+          "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+          "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+          "-Djdk.reflect.useDirectMethodHandle=false",
+          "-Dio.netty.tryReflectionSetAccessible=true",
+          "-Darrow.enable_unsafe_memory_access=true",
+          // Forward LanceDatasetCache toggle so executors observe the same caching behavior
+          "-Dlance.spark.dataset_cache_enabled="
+              + System.getProperty("lance.spark.dataset_cache_enabled", "true"),
+          "-Dlance.spark.probe_fixed_cost="
+              + System.getProperty("lance.spark.probe_fixed_cost", "false"));
+    }
+
     @Setup(Level.Trial)
     public void init() throws IOException {
       synchronized (TpcdsSession.class) {
@@ -128,9 +162,11 @@ public class MinioTpcdsBenchmark {
         printJarFingerprint();
         SparkSession.clearActiveSession();
         SparkSession.clearDefaultSession();
-        SHARED = SparkSession.builder()
+        String master = resolveMaster();
+        System.err.println("=== Spark master = " + master + " ===");
+        SparkSession.Builder builder = SparkSession.builder()
             .appName("lance-minio-tpcds-benchmark")
-            .master("local[*]")
+            .master(master)
             .config("spark.sql.shuffle.partitions", "12")
             .config("spark.sql.parquet.enableVectorizedReader", "true")
             .config("spark.ui.enabled", "false")
@@ -154,8 +190,11 @@ public class MinioTpcdsBenchmark {
             .config("spark.sql.catalog.lance_default.aws_endpoint", PROXY_ENDPOINT)
             .config("spark.sql.catalog.lance_default.aws_region", "us-east-1")
             .config("spark.sql.catalog.lance_default.aws_virtual_hosted_style_request", "false")
-            .config("spark.sql.catalog.lance_default.allow_http", "true")
-            .getOrCreate();
+            .config("spark.sql.catalog.lance_default.allow_http", "true");
+        if (master.startsWith("local-cluster")) {
+          builder.config("spark.executor.extraJavaOptions", executorJavaOptions());
+        }
+        SHARED = builder.getOrCreate();
 
         // Warmup Spark codegen + JIT
         SHARED.sql("SELECT sum(id) FROM range(0, 1000)").write()

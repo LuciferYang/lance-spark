@@ -49,10 +49,54 @@ public class LocalClusterAB {
             "SELECT sum(ss_wholesale_cost), sum(ss_list_price), sum(ss_sales_price), "
                 + "sum(ss_ext_sales_price), sum(ss_net_paid), sum(ss_net_profit) "
                 + "FROM store_sales"});
+    QUERIES.put("q5",
+        new String[] {"customer",
+            "SELECT count(distinct c_customer_sk) FROM customer"});
+    QUERIES.put("q6",
+        new String[] {"store_returns",
+            "SELECT sum(sr_fee), sum(sr_return_tax) FROM store_returns"});
+    QUERIES.put("q7",
+        new String[] {"item",
+            "SELECT count(distinct i_product_name) FROM item"});
+    QUERIES.put("q8",
+        new String[] {"customer",
+            "SELECT count(*) FROM customer WHERE c_first_name = 'James'"});
+    QUERIES.put("q9",
+        new String[] {"customer_address",
+            "SELECT ca_state, count(*) FROM customer_address GROUP BY ca_state"});
+    QUERIES.put("q10",
+        new String[] {"date_dim",
+            "SELECT count(*) FROM date_dim "
+                + "WHERE d_date BETWEEN DATE'1999-01-01' AND DATE'2002-12-31'"});
     QUERIES.put("q11",
         new String[] {"date_dim", "SELECT d_year, count(*) FROM date_dim GROUP BY d_year"});
+    QUERIES.put("q12",
+        new String[] {"store_sales,date_dim",
+            "SELECT d_year, sum(ss_quantity) "
+                + "FROM store_sales JOIN date_dim ON ss_sold_date_sk = d_date_sk "
+                + "GROUP BY d_year"});
+    QUERIES.put("q13",
+        new String[] {"synth_numeric",
+            "SELECT max(v_int64) FROM synth_numeric"});
     QUERIES.put("q14",
         new String[] {"synth_numeric", "SELECT sum(v_double) FROM synth_numeric"});
+    QUERIES.put("q15",
+        new String[] {"synth_numeric",
+            "SELECT sum(v_float) FROM synth_numeric"});
+    QUERIES.put("q16",
+        new String[] {"synth_numeric",
+            "SELECT sum(v_decimal_18_2) FROM synth_numeric"});
+    QUERIES.put("q17",
+        new String[] {"synth_numeric",
+            "SELECT max(v_decimal_38_18) FROM synth_numeric"});
+    QUERIES.put("q18",
+        new String[] {"synth_temporal",
+            "SELECT count(*) FROM synth_temporal "
+                + "WHERE v_timestamp BETWEEN TIMESTAMP'2018-01-01 00:00:00' "
+                + "AND TIMESTAMP'2020-01-01 00:00:00'"});
+    QUERIES.put("q19",
+        new String[] {"synth_numeric",
+            "SELECT count(*) FROM synth_numeric WHERE v_boolean = true"});
   }
 
   /** {viewName -> uri-suffix} so a view can map to either a Lance or Parquet URI by format. */
@@ -61,7 +105,12 @@ public class LocalClusterAB {
   static {
     VIEWS.put("store_sales", "tpcds-sf-100/store_sales");
     VIEWS.put("date_dim", "tpcds-sf-100/date_dim");
+    VIEWS.put("customer", "tpcds-sf-100/customer");
+    VIEWS.put("customer_address", "tpcds-sf-100/customer_address");
+    VIEWS.put("item", "tpcds-sf-100/item");
+    VIEWS.put("store_returns", "tpcds-sf-100/store_returns");
     VIEWS.put("synth_numeric", "synth/numeric");
+    VIEWS.put("synth_temporal", "synth/temporal");
   }
 
   private static String executorJavaOptions() {

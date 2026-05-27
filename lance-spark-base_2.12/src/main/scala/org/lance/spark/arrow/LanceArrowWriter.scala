@@ -375,7 +375,7 @@ private[arrow] class FixedSizeBinaryWriter(val valueVector: FixedSizeBinaryVecto
     // match byteWidth; validate up-front so the user gets a clear, column-aware error instead.
     if (bytes.length != byteWidth) {
       throw new IllegalArgumentException(
-        s"FixedSizeBinary column expects $byteWidth bytes per row, got ${bytes.length}")
+        s"FixedSizeBinary column '$name' expects $byteWidth bytes per row, got ${bytes.length}")
     }
     valueVector.setSafe(count, bytes)
   }

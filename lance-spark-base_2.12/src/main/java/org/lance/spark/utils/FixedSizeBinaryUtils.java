@@ -13,9 +13,7 @@
  */
 package org.lance.spark.utils;
 
-import org.apache.spark.sql.types.BinaryType;
 import org.apache.spark.sql.types.Metadata;
-import org.apache.spark.sql.types.StructField;
 
 /**
  * Utility class for FixedSizeBinary Arrow type metadata handling. When reading a Lance file that
@@ -29,22 +27,6 @@ public class FixedSizeBinaryUtils {
       "arrow.fixed-size-binary.byte-width";
 
   /**
-   * Check if a Spark field carries FixedSizeBinary metadata.
-   *
-   * @param field the Spark struct field to check
-   * @return true if the field is BinaryType with FixedSizeBinary byte-width metadata
-   */
-  public static boolean isFixedSizeBinaryField(StructField field) {
-    if (field == null) {
-      return false;
-    }
-    if (!(field.dataType() instanceof BinaryType)) {
-      return false;
-    }
-    return hasFixedSizeBinaryMetadata(field.metadata());
-  }
-
-  /**
    * Check if metadata contains the FixedSizeBinary byte-width key.
    *
    * @param metadata the Spark field metadata
@@ -52,21 +34,6 @@ public class FixedSizeBinaryUtils {
    */
   public static boolean hasFixedSizeBinaryMetadata(Metadata metadata) {
     return metadata != null && metadata.contains(ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY);
-  }
-
-  /**
-   * Get the byte width from a Spark field's metadata.
-   *
-   * @param field the Spark struct field
-   * @return the byte width, or -1 if the field has no FixedSizeBinary metadata
-   */
-  public static int getByteWidth(StructField field) {
-    if (!isFixedSizeBinaryField(field)) {
-      return -1;
-    }
-    // isFixedSizeBinaryField confirmed the key is present; getLong throwing here would indicate
-    // internal corruption and should surface rather than be masked as "-1 means no metadata".
-    return (int) field.metadata().getLong(ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY);
   }
 
   /**

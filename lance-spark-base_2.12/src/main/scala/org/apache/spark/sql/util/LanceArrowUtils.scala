@@ -56,9 +56,11 @@ object LanceArrowUtils {
   val LANCE_MAP_VALUE_METADATA_KEY = "_lance.value"
 
   // Lance-Spark convention: UDT class FQN on the Arrow field's user metadata. Write stamps it
-  // from udt.getClass.getName; read consumes it to rewrap the field's dataType. Spark's own
-  // sources don't use this key — Parquet round-trips UDT info via a file-level serialized
-  // schema (ParquetReadSupport.SPARK_METADATA_KEY) instead.
+  // from udt.getClass.getName when udt.sqlType is a StructType; read consumes it to rewrap the
+  // field's dataType. UDTs with non-struct sqlType are written via their underlying type without
+  // the marker (the UDT wrapper degrades to sqlType on read-back). Spark's own sources don't
+  // use this key — Parquet round-trips UDT info via a file-level serialized schema
+  // (ParquetReadSupport.SPARK_METADATA_KEY) instead.
   val LANCE_UDT_CLASS_KEY = "__udt"
 
   private val LANCE_INTERNAL_METADATA_KEYS = Set(
@@ -416,15 +418,23 @@ object LanceArrowUtils {
             timeZoneId,
             largeVarTypes = largeVarTypes)).asJava)
       case udt: UserDefinedType[_] =>
-        // Unwrap to sqlType for storage (Arrow has no UDT concept) but stamp the UDT FQN as a
-        // field-level metadata marker so the read side can rewrap automatically. The incoming
-        // user metadata (if any) is preserved alongside the marker.
-        val baseBuilder = new MetadataBuilder()
-        if (metadata != null) {
-          baseBuilder.withMetadata(metadata)
+        // Unwrap to sqlType for storage (Arrow has no UDT concept). When sqlType is a
+        // StructType, stamp the UDT FQN as a field-level metadata marker so the read side
+        // can rewrap automatically. For non-struct sqlTypes the marker is skipped — the data
+        // still round-trips via the underlying type, but the UDT wrapper degrades. All real
+        // MLlib UDTs (VectorUDT, MatrixUDT) use struct sqlType, so this restriction matches
+        // every supported case while keeping `__udt` off arrow fields where it has no use.
+        udt.sqlType match {
+          case _: StructType =>
+            val baseBuilder = new MetadataBuilder()
+            if (metadata != null) {
+              baseBuilder.withMetadata(metadata)
+            }
+            val udtMeta = baseBuilder.putString(LANCE_UDT_CLASS_KEY, udt.getClass.getName).build()
+            toArrowField(name, udt.sqlType, nullable, timeZoneId, udtMeta, largeVarTypes)
+          case _ =>
+            toArrowField(name, udt.sqlType, nullable, timeZoneId, metadata, largeVarTypes)
         }
-        val udtMeta = baseBuilder.putString(LANCE_UDT_CLASS_KEY, udt.getClass.getName).build()
-        toArrowField(name, udt.sqlType, nullable, timeZoneId, udtMeta, largeVarTypes)
       case DateType if DateMilliUtils.hasDateMilliMetadata(metadata) =>
         val fieldType = new FieldType(
           nullable,

@@ -611,7 +611,6 @@ public abstract class BaseSparkDataTypeRoundtripTest {
 
     Dataset<Row> result = writeAndRead(schema, data, "udt_array_element");
 
-    DataTypes.createArrayType(vectorUDT, true);
     org.apache.spark.sql.types.ArrayType arr =
         (org.apache.spark.sql.types.ArrayType) result.schema().apply("vecs").dataType();
     assertInstanceOf(

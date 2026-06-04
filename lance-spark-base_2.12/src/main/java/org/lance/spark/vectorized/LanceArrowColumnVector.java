@@ -553,9 +553,8 @@ public class LanceArrowColumnVector extends ColumnVector {
     return LanceArrowUtils.fromArrowField(vector.getField());
   }
 
-  private static final int DECIMAL128_BYTE_WIDTH = 16;
-
   private static class LanceDecimalAccessor {
+    private static final int DECIMAL128_BYTE_WIDTH = 16;
     private final DecimalVector vector;
     private final ArrowBuf dataBuffer;
     private final boolean useFastPath;

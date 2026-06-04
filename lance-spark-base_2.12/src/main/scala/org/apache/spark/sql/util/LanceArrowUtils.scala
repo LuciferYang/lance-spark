@@ -44,6 +44,8 @@ object LanceArrowUtils {
   val ARROW_FIXED_SIZE_LIST_SIZE_KEY = VectorUtils.ARROW_FIXED_SIZE_LIST_SIZE_KEY
   val ARROW_FLOAT16_KEY = Float16Utils.ARROW_FLOAT16_KEY
   val ENCODING_BLOB = BlobUtils.LANCE_ENCODING_BLOB_KEY
+  val ARROW_EXT_NAME_KEY = BlobUtils.ARROW_EXTENSION_NAME_KEY
+  val BLOB_V2_EXT_NAME = BlobUtils.ARROW_EXTENSION_BLOB_V2
   val ARROW_LARGE_VAR_CHAR_KEY = LargeVarCharUtils.ARROW_LARGE_VAR_CHAR_KEY
   val ARROW_DATE_MILLISECOND_KEY = DateMilliUtils.ARROW_DATE_MILLISECOND_KEY
   val ARROW_FIXED_SIZE_BINARY_BYTE_WIDTH_KEY =
@@ -108,6 +110,8 @@ object LanceArrowUtils {
         val elementType = fromArrowField(elementField)
         val containsNull = elementField.isNullable
         ArrayType(elementType, containsNull)
+      case _: ArrowType.Struct if isBlobField(field) =>
+        BinaryType
       case _: ArrowType.Struct =>
         // Always recurse through LanceArrowUtils for struct children so special cases
         // like Date(MILLISECOND), FixedSizeBinary, etc. are applied in nested schemas too.
@@ -463,6 +467,19 @@ object LanceArrowUtils {
           null,
           meta.asJava)
         new Field(name, fieldType, Seq.empty[Field].asJava)
+      case _: BinaryType
+          if BLOB_V2_EXT_NAME.equals(meta.getOrElse(ARROW_EXT_NAME_KEY, "")) =>
+        // Blob v2 writes the struct lance-core expects: data, uri, position, size.
+        val structFieldType =
+          new FieldType(nullable, ArrowType.Struct.INSTANCE, null, meta.asJava)
+        new Field(
+          name,
+          structFieldType,
+          Seq(
+            toArrowField("data", BinaryType, nullable = true, timeZoneId, largeVarTypes = true),
+            toArrowField("uri", StringType, nullable = true, timeZoneId),
+            arrowUInt64Field("position"),
+            arrowUInt64Field("size")).asJava)
       case dataType =>
         val fieldType =
           new FieldType(nullable, toArrowType(dataType, timeZoneId, large, name), null, meta.asJava)
@@ -646,9 +663,17 @@ object LanceArrowUtils {
 
   private def isBlobField(field: Field): Boolean = {
     val metadata = field.getMetadata
-    metadata != null && metadata.containsKey(ENCODING_BLOB) &&
-    "true".equalsIgnoreCase(metadata.get(ENCODING_BLOB))
+    if (metadata == null) return false
+    (metadata.containsKey(ENCODING_BLOB) &&
+      "true".equalsIgnoreCase(metadata.get(ENCODING_BLOB))) ||
+    BLOB_V2_EXT_NAME.equals(metadata.get(ARROW_EXT_NAME_KEY))
   }
+
+  private def arrowUInt64Field(name: String): Field =
+    new Field(
+      name,
+      new FieldType(true, new ArrowType.Int(64, false), null, Map.empty[String, String].asJava),
+      Seq.empty[Field].asJava)
 }
 
 /**

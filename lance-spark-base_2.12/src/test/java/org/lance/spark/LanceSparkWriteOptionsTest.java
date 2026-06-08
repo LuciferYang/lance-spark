@@ -150,4 +150,27 @@ public class LanceSparkWriteOptionsTest {
     assertTrue(writeOptions.getEnableStableRowIds());
     assertEquals(Long.valueOf(2147483648L), writeOptions.getBlobPackFileSizeThreshold());
   }
+
+  @Test
+  public void testWithCatalogDefaultsParsesWriteSettings() {
+    final Map<String, String> catalogOptions = new HashMap<>();
+    catalogOptions.put("batch_size", "512");
+    catalogOptions.put("use_queued_write_buffer", "true");
+    catalogOptions.put("queue_depth", "4");
+    catalogOptions.put("max_batch_bytes", "4096");
+    catalogOptions.put("blob_pack_file_size_threshold", "8192");
+
+    final LanceSparkCatalogConfig catalogConfig = LanceSparkCatalogConfig.from(catalogOptions);
+    final LanceSparkWriteOptions writeOptions =
+        LanceSparkWriteOptions.builder()
+            .datasetUri(TEMP_URL)
+            .withCatalogDefaults(catalogConfig)
+            .build();
+
+    assertEquals(512, writeOptions.getBatchSize());
+    assertTrue(writeOptions.isUseQueuedWriteBuffer());
+    assertEquals(4, writeOptions.getQueueDepth());
+    assertEquals(4096L, writeOptions.getMaxBatchBytes());
+    assertEquals(Long.valueOf(8192L), writeOptions.getBlobPackFileSizeThreshold());
+  }
 }

@@ -138,6 +138,8 @@ public class SparkWriteTest {
         LanceSparkWriteOptions.builder()
             .datasetUri(datasetUri)
             .writeMode(WriteParams.WriteMode.APPEND)
+            .maxBatchBytes(4096L)
+            .blobPackFileSizeThreshold(8192L)
             .useLargeVarTypes(true)
             .build();
     SparkWrite.SparkWriteBuilder builder =
@@ -156,6 +158,14 @@ public class SparkWriteTest {
     assertTrue(
         sparkWrite.getWriteOptions().isUseLargeVarTypes(),
         "useLargeVarTypes should be preserved after truncate()");
+    assertEquals(
+        4096L,
+        sparkWrite.getWriteOptions().getMaxBatchBytes(),
+        "maxBatchBytes should be preserved after truncate()");
+    assertEquals(
+        Long.valueOf(8192L),
+        sparkWrite.getWriteOptions().getBlobPackFileSizeThreshold(),
+        "blobPackFileSizeThreshold should be preserved after truncate()");
   }
 
   // --- requiredDistribution / requiredOrdering tests ---

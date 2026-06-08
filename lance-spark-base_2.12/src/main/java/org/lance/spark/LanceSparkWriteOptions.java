@@ -525,8 +525,7 @@ public class LanceSparkWriteOptions implements Serializable {
       // Merge storage options: catalog options are defaults, current options override
       Map<String, String> merged = new HashMap<>(catalogConfig.getStorageOptions());
       merged.putAll(this.storageOptions);
-      this.storageOptions = merged;
-      return this;
+      return fromOptions(merged);
     }
 
     public LanceSparkWriteOptions build() {

@@ -233,11 +233,62 @@ public class QueuedArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
         currentBatch.close();
       }
       currentBatchAllocator.close();
+      currentBatch = null;
+      currentBatchAllocator = null;
+      currentArrowWriter = null;
       throw e;
     }
     currentArrowWriter =
         org.lance.spark.arrow.LanceArrowWriter$.MODULE$.create(currentBatch, sparkSchema, resolver);
     currentBatchRowCount.set(0);
+  }
+
+  /** Detaches the producer's current batch so ownership transfers to the queue or caller. */
+  private BatchEntry detachCurrentBatch() {
+    BatchEntry entry = new BatchEntry(currentBatch, currentBatchAllocator);
+    currentBatch = null;
+    currentBatchAllocator = null;
+    currentArrowWriter = null;
+    currentBatchRowCount.set(0);
+    return entry;
+  }
+
+  /** Closes the producer's current batch if it has not been handed to the queue. */
+  private void closeCurrentBatch() {
+    VectorSchemaRoot batch = currentBatch;
+    BufferAllocator batchAllocator = currentBatchAllocator;
+    currentBatch = null;
+    currentBatchAllocator = null;
+    currentArrowWriter = null;
+    currentBatchRowCount.set(0);
+
+    if (batch != null) {
+      try {
+        batch.close();
+      } finally {
+        if (batchAllocator != null) {
+          batchAllocator.close();
+        }
+      }
+    } else if (batchAllocator != null) {
+      batchAllocator.close();
+    }
+  }
+
+  /** Queues a completed batch, closing it if it cannot be handed off. */
+  private void queueBatch(BatchEntry entry) throws InterruptedException {
+    try {
+      while (!batchQueue.offer(entry, 100, TimeUnit.MILLISECONDS)) {
+        checkForError();
+      }
+    } catch (InterruptedException | RuntimeException | Error e) {
+      try {
+        entry.close();
+      } catch (RuntimeException closeError) {
+        e.addSuppressed(closeError);
+      }
+      throw e;
+    }
   }
 
   /** Returns whether the current batch should be flushed based on byte size. */
@@ -278,16 +329,9 @@ public class QueuedArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
         currentArrowWriter.finish();
         currentBatch.setRowCount(count);
 
-        BatchEntry entry = new BatchEntry(currentBatch, currentBatchAllocator);
         // Put in queue, periodically checking for consumer errors
-        try {
-          while (!batchQueue.offer(entry, 100, TimeUnit.MILLISECONDS)) {
-            checkForError();
-          }
-        } catch (RuntimeException e) {
-          entry.close();
-          throw e;
-        }
+        BatchEntry entry = detachCurrentBatch();
+        queueBatch(entry);
 
         // Allocate new batch for next writes
         allocateNewBatch();
@@ -312,26 +356,17 @@ public class QueuedArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
       // a race where the consumer sees producerFinished=true with an empty queue
       // and exits before the final batch is enqueued.
       int remainingRows = currentBatchRowCount.get();
-      if (remainingRows > 0) {
+      if (currentBatch == null) {
+        // The current batch may already have been detached and closed after a failed queue handoff.
+      } else if (remainingRows > 0) {
         currentArrowWriter.finish();
         currentBatch.setRowCount(remainingRows);
-        BatchEntry entry = new BatchEntry(currentBatch, currentBatchAllocator);
-        try {
-          while (!batchQueue.offer(entry, 100, TimeUnit.MILLISECONDS)) {
-            checkForError();
-          }
-        } catch (RuntimeException e) {
-          entry.close();
-          throw e;
-        }
+        BatchEntry entry = detachCurrentBatch();
+        queueBatch(entry);
       } else {
         // No remaining rows, close the empty batch and its allocator
-        currentBatch.close();
-        currentBatchAllocator.close();
+        closeCurrentBatch();
       }
-      currentBatch = null;
-      currentBatchAllocator = null;
-      currentArrowWriter = null;
 
       // Signal completion only after the final batch is safely in the queue
       producerFinished = true;
@@ -403,6 +438,8 @@ public class QueuedArrowBatchWriteBuffer extends ArrowBatchWriteBuffer {
 
   @Override
   protected void closeReadSource() throws IOException {
+    closeCurrentBatch();
+
     // Close any remaining batch
     if (consumerCurrentEntry != null) {
       consumerCurrentEntry.close();

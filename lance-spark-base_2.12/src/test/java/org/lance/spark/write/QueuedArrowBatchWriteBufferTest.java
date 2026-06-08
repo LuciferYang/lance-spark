@@ -36,6 +36,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,6 +57,10 @@ public class QueuedArrowBatchWriteBufferTest {
   private StructType createIntSparkSchema() {
     return new StructType(
         new StructField[] {DataTypes.createStructField("column1", DataTypes.IntegerType, true)});
+  }
+
+  private InternalRow intRow(int value) {
+    return new GenericInternalRow(new Object[] {value});
   }
 
   @Test
@@ -579,6 +584,82 @@ public class QueuedArrowBatchWriteBufferTest {
 
       assertEquals(batchSize, rowsWritten.get());
       assertEquals(batchSize, rowsRead.get());
+      writeBuffer.close();
+    }
+  }
+
+  @Test
+  public void testInterruptedWriteClosesUnqueuedBatch() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      Schema schema = createIntSchema();
+      StructType sparkSchema = createIntSparkSchema();
+
+      final QueuedArrowBatchWriteBuffer writeBuffer =
+          new QueuedArrowBatchWriteBuffer(allocator, schema, sparkSchema, 1, 1);
+
+      writeBuffer.write(intRow(1));
+
+      CountDownLatch writerStarted = new CountDownLatch(1);
+      AtomicReference<Throwable> writerError = new AtomicReference<>();
+      Thread writerThread =
+          new Thread(
+              () -> {
+                writerStarted.countDown();
+                try {
+                  writeBuffer.write(intRow(2));
+                } catch (Throwable e) {
+                  writerError.set(e);
+                }
+              });
+
+      writerThread.start();
+      assertTrue(writerStarted.await(5, TimeUnit.SECONDS));
+      Thread.sleep(250);
+      writerThread.interrupt();
+      writerThread.join(5000);
+
+      assertFalse(writerThread.isAlive(), "Writer should stop after interruption");
+      assertNotNull(writerError.get(), "Writer should report interruption");
+      assertTrue(writerError.get().getCause() instanceof InterruptedException);
+      writeBuffer.close();
+    }
+  }
+
+  @Test
+  public void testInterruptedSetFinishedClosesUnqueuedPartialBatch() throws Exception {
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      Schema schema = createIntSchema();
+      StructType sparkSchema = createIntSparkSchema();
+
+      final QueuedArrowBatchWriteBuffer writeBuffer =
+          new QueuedArrowBatchWriteBuffer(allocator, schema, sparkSchema, 2, 1);
+
+      writeBuffer.write(intRow(1));
+      writeBuffer.write(intRow(2));
+      writeBuffer.write(intRow(3));
+
+      CountDownLatch finisherStarted = new CountDownLatch(1);
+      AtomicReference<Throwable> finisherError = new AtomicReference<>();
+      Thread finisherThread =
+          new Thread(
+              () -> {
+                finisherStarted.countDown();
+                try {
+                  writeBuffer.setFinished();
+                } catch (Throwable e) {
+                  finisherError.set(e);
+                }
+              });
+
+      finisherThread.start();
+      assertTrue(finisherStarted.await(5, TimeUnit.SECONDS));
+      Thread.sleep(250);
+      finisherThread.interrupt();
+      finisherThread.join(5000);
+
+      assertFalse(finisherThread.isAlive(), "Finisher should stop after interruption");
+      assertNotNull(finisherError.get(), "Finisher should report interruption");
+      assertTrue(finisherError.get().getCause() instanceof InterruptedException);
       writeBuffer.close();
     }
   }

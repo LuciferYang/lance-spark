@@ -242,10 +242,7 @@ public class SparkWrite implements Write, RequiresDistributionAndOrdering {
       LanceSparkWriteOptions options =
           !overwrite
               ? writeOptions
-              : writeOptions
-                  .toBuilder()
-                  .writeMode(WriteParams.WriteMode.OVERWRITE)
-                  .build();
+              : writeOptions.toBuilder().writeMode(WriteParams.WriteMode.OVERWRITE).build();
 
       return new SparkWrite(
           schema,

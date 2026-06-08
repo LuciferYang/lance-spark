@@ -336,9 +336,9 @@ object LanceSearchTableFunctions {
   }
 
   private def toNumber(value: Any): Number = value match {
-    case number: Number => number
     case decimal: org.apache.spark.sql.types.Decimal => decimal.toJavaBigDecimal
     case decimal: scala.math.BigDecimal => decimal.bigDecimal
+    case number: Number => number
     case other => throw new IllegalArgumentException(s"Expected numeric literal, got $other")
   }
 

@@ -368,6 +368,18 @@ public class LanceSparkWriteOptions implements Serializable {
     private LanceNamespace namespace;
     private List<String> tableId;
     private Long version;
+    private boolean writeModeSet;
+    private boolean maxRowsPerFileSet;
+    private boolean maxRowsPerGroupSet;
+    private boolean maxBytesPerFileSet;
+    private boolean fileFormatVersionSet;
+    private boolean useQueuedWriteBufferSet;
+    private boolean queueDepthSet;
+    private boolean batchSizeSet;
+    private boolean enableStableRowIdsSet;
+    private boolean useLargeVarTypesSet;
+    private boolean maxBatchBytesSet;
+    private boolean blobPackFileSizeThresholdSet;
 
     private Builder() {}
 
@@ -378,57 +390,68 @@ public class LanceSparkWriteOptions implements Serializable {
 
     public Builder writeMode(WriteMode writeMode) {
       this.writeMode = writeMode;
+      this.writeModeSet = true;
       return this;
     }
 
     public Builder maxRowsPerFile(Integer maxRowsPerFile) {
       this.maxRowsPerFile = maxRowsPerFile;
+      this.maxRowsPerFileSet = true;
       return this;
     }
 
     public Builder maxRowsPerGroup(Integer maxRowsPerGroup) {
       this.maxRowsPerGroup = maxRowsPerGroup;
+      this.maxRowsPerGroupSet = true;
       return this;
     }
 
     public Builder maxBytesPerFile(Long maxBytesPerFile) {
       this.maxBytesPerFile = maxBytesPerFile;
+      this.maxBytesPerFileSet = true;
       return this;
     }
 
     public Builder fileFormatVersion(String fileFormatVersion) {
       this.fileFormatVersion = fileFormatVersion;
+      this.fileFormatVersionSet = true;
       return this;
     }
 
     public Builder useQueuedWriteBuffer(boolean useQueuedWriteBuffer) {
       this.useQueuedWriteBuffer = useQueuedWriteBuffer;
+      this.useQueuedWriteBufferSet = true;
       return this;
     }
 
     public Builder queueDepth(int queueDepth) {
       this.queueDepth = queueDepth;
+      this.queueDepthSet = true;
       return this;
     }
 
     public Builder batchSize(int batchSize) {
       this.batchSize = batchSize;
+      this.batchSizeSet = true;
       return this;
     }
 
     public Builder enableStableRowIds(Boolean enableStableRowIds) {
       this.enableStableRowIds = enableStableRowIds;
+      this.enableStableRowIdsSet = true;
       return this;
     }
 
     public Builder useLargeVarTypes(boolean useLargeVarTypes) {
       this.useLargeVarTypes = useLargeVarTypes;
+      this.useLargeVarTypesSet = true;
       return this;
     }
 
     public Builder maxBatchBytes(long maxBatchBytes) {
       Preconditions.checkArgument(maxBatchBytes > 0, "maxBatchBytes must be positive");
       this.maxBatchBytes = maxBatchBytes;
+      this.maxBatchBytesSet = true;
       return this;
     }
 
@@ -437,6 +460,7 @@ public class LanceSparkWriteOptions implements Serializable {
           blobPackFileSizeThreshold == null || blobPackFileSizeThreshold > 0,
           "blobPackFileSizeThreshold must be positive");
       this.blobPackFileSizeThreshold = blobPackFileSizeThreshold;
+      this.blobPackFileSizeThresholdSet = true;
       return this;
     }
 
@@ -471,46 +495,58 @@ public class LanceSparkWriteOptions implements Serializable {
       this.storageOptions = new HashMap<>(options);
       if (options.containsKey(CONFIG_WRITE_MODE)) {
         this.writeMode = WriteMode.valueOf(options.get(CONFIG_WRITE_MODE).toUpperCase());
+        this.writeModeSet = true;
       }
       if (options.containsKey(CONFIG_MAX_ROWS_PER_FILE)) {
         this.maxRowsPerFile = Integer.parseInt(options.get(CONFIG_MAX_ROWS_PER_FILE));
+        this.maxRowsPerFileSet = true;
       }
       if (options.containsKey(CONFIG_MAX_ROWS_PER_GROUP)) {
         this.maxRowsPerGroup = Integer.parseInt(options.get(CONFIG_MAX_ROWS_PER_GROUP));
+        this.maxRowsPerGroupSet = true;
       }
       if (options.containsKey(CONFIG_MAX_BYTES_PER_FILE)) {
         this.maxBytesPerFile = Long.parseLong(options.get(CONFIG_MAX_BYTES_PER_FILE));
+        this.maxBytesPerFileSet = true;
       }
       if (options.containsKey(CONFIG_FILE_FORMAT_VERSION)) {
         this.fileFormatVersion = options.get(CONFIG_FILE_FORMAT_VERSION);
+        this.fileFormatVersionSet = true;
       }
       if (options.containsKey(CONFIG_USE_QUEUED_WRITE_BUFFER)) {
         this.useQueuedWriteBuffer =
             Boolean.parseBoolean(options.get(CONFIG_USE_QUEUED_WRITE_BUFFER));
+        this.useQueuedWriteBufferSet = true;
       }
       if (options.containsKey(CONFIG_QUEUE_DEPTH)) {
         this.queueDepth = Integer.parseInt(options.get(CONFIG_QUEUE_DEPTH));
+        this.queueDepthSet = true;
       }
       if (options.containsKey(CONFIG_BATCH_SIZE)) {
         int parsedBatchSize = Integer.parseInt(options.get(CONFIG_BATCH_SIZE));
         Preconditions.checkArgument(parsedBatchSize > 0, "batch_size must be positive");
         this.batchSize = parsedBatchSize;
+        this.batchSizeSet = true;
       }
       if (options.containsKey(CONFIG_ENABLE_STABLE_ROW_IDS)) {
         this.enableStableRowIds = Boolean.parseBoolean(options.get(CONFIG_ENABLE_STABLE_ROW_IDS));
+        this.enableStableRowIdsSet = true;
       }
       if (options.containsKey(CONFIG_USE_LARGE_VAR_TYPES)) {
         this.useLargeVarTypes = Boolean.parseBoolean(options.get(CONFIG_USE_LARGE_VAR_TYPES));
+        this.useLargeVarTypesSet = true;
       }
       if (options.containsKey(CONFIG_MAX_BATCH_BYTES)) {
         long parsedMaxBatchBytes = Long.parseLong(options.get(CONFIG_MAX_BATCH_BYTES));
         Preconditions.checkArgument(parsedMaxBatchBytes > 0, "max_batch_bytes must be positive");
         this.maxBatchBytes = parsedMaxBatchBytes;
+        this.maxBatchBytesSet = true;
       }
       if (options.containsKey(CONFIG_BLOB_PACK_FILE_SIZE_THRESHOLD)) {
         long parsed = Long.parseLong(options.get(CONFIG_BLOB_PACK_FILE_SIZE_THRESHOLD));
         Preconditions.checkArgument(parsed > 0, "blob_pack_file_size_threshold must be positive");
         this.blobPackFileSizeThreshold = parsed;
+        this.blobPackFileSizeThresholdSet = true;
       }
       return this;
     }
@@ -522,10 +558,13 @@ public class LanceSparkWriteOptions implements Serializable {
      * @return this builder
      */
     public Builder withCatalogDefaults(LanceSparkCatalogConfig catalogConfig) {
+      WriteOptionSnapshot current = WriteOptionSnapshot.capture(this);
       // Merge storage options: catalog options are defaults, current options override
       Map<String, String> merged = new HashMap<>(catalogConfig.getStorageOptions());
       merged.putAll(this.storageOptions);
-      return fromOptions(merged);
+      fromOptions(merged);
+      current.restoreExplicitOptions(this);
+      return this;
     }
 
     public LanceSparkWriteOptions build() {
@@ -533,6 +572,103 @@ public class LanceSparkWriteOptions implements Serializable {
         throw new IllegalArgumentException("datasetUri is required");
       }
       return new LanceSparkWriteOptions(this);
+    }
+
+    private static class WriteOptionSnapshot {
+      private final WriteMode writeMode;
+      private final Integer maxRowsPerFile;
+      private final Integer maxRowsPerGroup;
+      private final Long maxBytesPerFile;
+      private final String fileFormatVersion;
+      private final boolean useQueuedWriteBuffer;
+      private final int queueDepth;
+      private final int batchSize;
+      private final Boolean enableStableRowIds;
+      private final boolean useLargeVarTypes;
+      private final long maxBatchBytes;
+      private final Long blobPackFileSizeThreshold;
+      private final boolean writeModeSet;
+      private final boolean maxRowsPerFileSet;
+      private final boolean maxRowsPerGroupSet;
+      private final boolean maxBytesPerFileSet;
+      private final boolean fileFormatVersionSet;
+      private final boolean useQueuedWriteBufferSet;
+      private final boolean queueDepthSet;
+      private final boolean batchSizeSet;
+      private final boolean enableStableRowIdsSet;
+      private final boolean useLargeVarTypesSet;
+      private final boolean maxBatchBytesSet;
+      private final boolean blobPackFileSizeThresholdSet;
+
+      private WriteOptionSnapshot(Builder builder) {
+        this.writeMode = builder.writeMode;
+        this.maxRowsPerFile = builder.maxRowsPerFile;
+        this.maxRowsPerGroup = builder.maxRowsPerGroup;
+        this.maxBytesPerFile = builder.maxBytesPerFile;
+        this.fileFormatVersion = builder.fileFormatVersion;
+        this.useQueuedWriteBuffer = builder.useQueuedWriteBuffer;
+        this.queueDepth = builder.queueDepth;
+        this.batchSize = builder.batchSize;
+        this.enableStableRowIds = builder.enableStableRowIds;
+        this.useLargeVarTypes = builder.useLargeVarTypes;
+        this.maxBatchBytes = builder.maxBatchBytes;
+        this.blobPackFileSizeThreshold = builder.blobPackFileSizeThreshold;
+        this.writeModeSet = builder.writeModeSet;
+        this.maxRowsPerFileSet = builder.maxRowsPerFileSet;
+        this.maxRowsPerGroupSet = builder.maxRowsPerGroupSet;
+        this.maxBytesPerFileSet = builder.maxBytesPerFileSet;
+        this.fileFormatVersionSet = builder.fileFormatVersionSet;
+        this.useQueuedWriteBufferSet = builder.useQueuedWriteBufferSet;
+        this.queueDepthSet = builder.queueDepthSet;
+        this.batchSizeSet = builder.batchSizeSet;
+        this.enableStableRowIdsSet = builder.enableStableRowIdsSet;
+        this.useLargeVarTypesSet = builder.useLargeVarTypesSet;
+        this.maxBatchBytesSet = builder.maxBatchBytesSet;
+        this.blobPackFileSizeThresholdSet = builder.blobPackFileSizeThresholdSet;
+      }
+
+      private static WriteOptionSnapshot capture(Builder builder) {
+        return new WriteOptionSnapshot(builder);
+      }
+
+      private void restoreExplicitOptions(Builder builder) {
+        if (writeModeSet) {
+          builder.writeMode = writeMode;
+        }
+        if (maxRowsPerFileSet) {
+          builder.maxRowsPerFile = maxRowsPerFile;
+        }
+        if (maxRowsPerGroupSet) {
+          builder.maxRowsPerGroup = maxRowsPerGroup;
+        }
+        if (maxBytesPerFileSet) {
+          builder.maxBytesPerFile = maxBytesPerFile;
+        }
+        if (fileFormatVersionSet) {
+          builder.fileFormatVersion = fileFormatVersion;
+        }
+        if (useQueuedWriteBufferSet) {
+          builder.useQueuedWriteBuffer = useQueuedWriteBuffer;
+        }
+        if (queueDepthSet) {
+          builder.queueDepth = queueDepth;
+        }
+        if (batchSizeSet) {
+          builder.batchSize = batchSize;
+        }
+        if (enableStableRowIdsSet) {
+          builder.enableStableRowIds = enableStableRowIds;
+        }
+        if (useLargeVarTypesSet) {
+          builder.useLargeVarTypes = useLargeVarTypes;
+        }
+        if (maxBatchBytesSet) {
+          builder.maxBatchBytes = maxBatchBytes;
+        }
+        if (blobPackFileSizeThresholdSet) {
+          builder.blobPackFileSizeThreshold = blobPackFileSizeThreshold;
+        }
+      }
     }
   }
 }

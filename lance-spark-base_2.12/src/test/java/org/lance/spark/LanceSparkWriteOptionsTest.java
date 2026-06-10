@@ -175,7 +175,7 @@ public class LanceSparkWriteOptionsTest {
   }
 
   @Test
-  public void testExplicitWriteSettingsOverrideCatalogDefaults() {
+  public void testFromOptionsOverrideCatalogDefaults() {
     final Map<String, String> catalogOptions = new HashMap<>();
     catalogOptions.put("write_mode", "OVERWRITE");
     catalogOptions.put("max_row_per_file", "1000");
@@ -190,22 +190,25 @@ public class LanceSparkWriteOptionsTest {
     catalogOptions.put("max_batch_bytes", "4096");
     catalogOptions.put("blob_pack_file_size_threshold", "8192");
 
+    final Map<String, String> userOptions = new HashMap<>();
+    userOptions.put("write_mode", "APPEND");
+    userOptions.put("max_row_per_file", "2000");
+    userOptions.put("max_rows_per_group", "1000");
+    userOptions.put("max_bytes_per_file", "2097152");
+    userOptions.put("file_format_version", "2.0");
+    userOptions.put("batch_size", "1024");
+    userOptions.put("use_queued_write_buffer", "false");
+    userOptions.put("queue_depth", "2");
+    userOptions.put("enable_stable_row_ids", "false");
+    userOptions.put("use_large_var_types", "false");
+    userOptions.put("max_batch_bytes", "16384");
+    userOptions.put("blob_pack_file_size_threshold", "32768");
+
     final LanceSparkCatalogConfig catalogConfig = LanceSparkCatalogConfig.from(catalogOptions);
     final LanceSparkWriteOptions writeOptions =
         LanceSparkWriteOptions.builder()
             .datasetUri(TEMP_URL)
-            .writeMode(WriteParams.WriteMode.APPEND)
-            .maxRowsPerFile(2000)
-            .maxRowsPerGroup(1000)
-            .maxBytesPerFile(2097152L)
-            .fileFormatVersion("2.0")
-            .batchSize(1024)
-            .useQueuedWriteBuffer(false)
-            .queueDepth(2)
-            .enableStableRowIds(false)
-            .useLargeVarTypes(false)
-            .maxBatchBytes(16384L)
-            .blobPackFileSizeThreshold(32768L)
+            .fromOptions(userOptions)
             .withCatalogDefaults(catalogConfig)
             .build();
 
@@ -221,36 +224,47 @@ public class LanceSparkWriteOptionsTest {
     assertFalse(writeOptions.isUseLargeVarTypes());
     assertEquals(16384L, writeOptions.getMaxBatchBytes());
     assertEquals(Long.valueOf(32768L), writeOptions.getBlobPackFileSizeThreshold());
+    // Typed fields and storage options stay consistent: user values win in both.
+    assertEquals("1024", writeOptions.getStorageOptions().get("batch_size"));
+    assertEquals("16384", writeOptions.getStorageOptions().get("max_batch_bytes"));
   }
 
   @Test
-  public void testFromOptionsOverrideCatalogDefaults() {
+  public void testCatalogDefaultsKeepTypedFieldsAndStorageOptionsConsistent() {
     final Map<String, String> catalogOptions = new HashMap<>();
     catalogOptions.put("batch_size", "512");
-    catalogOptions.put("use_queued_write_buffer", "true");
-    catalogOptions.put("queue_depth", "4");
-    catalogOptions.put("max_batch_bytes", "4096");
-    catalogOptions.put("blob_pack_file_size_threshold", "8192");
 
-    final Map<String, String> userOptions = new HashMap<>();
-    userOptions.put("batch_size", "1024");
-    userOptions.put("use_queued_write_buffer", "false");
-    userOptions.put("queue_depth", "2");
-    userOptions.put("max_batch_bytes", "16384");
-    userOptions.put("blob_pack_file_size_threshold", "32768");
+    final LanceSparkCatalogConfig catalogConfig = LanceSparkCatalogConfig.from(catalogOptions);
+    // Builder setters that pre-date withCatalogDefaults are re-derived from the merged
+    // option map (read-path semantics): the catalog value wins for keys it defines, and
+    // the typed field always agrees with the storage option (single source of truth).
+    final LanceSparkWriteOptions writeOptions =
+        LanceSparkWriteOptions.builder()
+            .datasetUri(TEMP_URL)
+            .batchSize(1024)
+            .withCatalogDefaults(catalogConfig)
+            .build();
+
+    assertEquals(512, writeOptions.getBatchSize());
+    assertEquals("512", writeOptions.getStorageOptions().get("batch_size"));
+  }
+
+  @Test
+  public void testBuilderSettersSurviveCatalogDefaultsForAbsentKeys() {
+    final Map<String, String> catalogOptions = new HashMap<>();
+    catalogOptions.put("queue_depth", "4");
 
     final LanceSparkCatalogConfig catalogConfig = LanceSparkCatalogConfig.from(catalogOptions);
     final LanceSparkWriteOptions writeOptions =
         LanceSparkWriteOptions.builder()
             .datasetUri(TEMP_URL)
-            .fromOptions(userOptions)
+            .batchSize(1024)
+            .enableStableRowIds(true)
             .withCatalogDefaults(catalogConfig)
             .build();
 
+    assertEquals(4, writeOptions.getQueueDepth());
     assertEquals(1024, writeOptions.getBatchSize());
-    assertFalse(writeOptions.isUseQueuedWriteBuffer());
-    assertEquals(2, writeOptions.getQueueDepth());
-    assertEquals(16384L, writeOptions.getMaxBatchBytes());
-    assertEquals(Long.valueOf(32768L), writeOptions.getBlobPackFileSizeThreshold());
+    assertTrue(writeOptions.getEnableStableRowIds());
   }
 }

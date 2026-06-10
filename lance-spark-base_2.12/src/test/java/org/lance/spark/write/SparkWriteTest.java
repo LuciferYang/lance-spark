@@ -16,6 +16,7 @@ package org.lance.spark.write;
 import org.lance.Dataset;
 import org.lance.WriteParams;
 import org.lance.memwal.InitializeMemWalParams;
+import org.lance.namespace.LanceNamespace;
 import org.lance.spark.LanceSparkWriteOptions;
 import org.lance.spark.TestUtils;
 
@@ -138,6 +139,7 @@ public class SparkWriteTest {
     String datasetUri = createDataset(testInfo.getTestMethod().get().getName());
     Map<String, String> storageOptions = new HashMap<>();
     storageOptions.put("region", "us-west-2");
+    LanceNamespace stubNamespace = TestUtils.stubNamespace();
     LanceSparkWriteOptions writeOptions =
         LanceSparkWriteOptions.builder()
             .datasetUri(datasetUri)
@@ -154,6 +156,7 @@ public class SparkWriteTest {
             .maxBatchBytes(4096L)
             .blobPackFileSizeThreshold(8192L)
             .storageOptions(storageOptions)
+            .namespace(stubNamespace)
             .tableId(Arrays.asList("default", "test_table"))
             .version(7L)
             .build();
@@ -194,6 +197,7 @@ public class SparkWriteTest {
         truncatedOptions.getBlobPackFileSizeThreshold(),
         "blobPackFileSizeThreshold should be preserved after truncate()");
     assertEquals(storageOptions, truncatedOptions.getStorageOptions());
+    assertSame(stubNamespace, truncatedOptions.getNamespace());
     assertEquals(Arrays.asList("default", "test_table"), truncatedOptions.getTableId());
     assertEquals(7L, truncatedOptions.getVersion());
   }

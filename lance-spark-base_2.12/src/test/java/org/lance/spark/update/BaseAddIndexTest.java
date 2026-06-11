@@ -674,6 +674,52 @@ public abstract class BaseAddIndexTest {
   }
 
   @Test
+  public void testCreateIndexFailureLeavesTableUsable() {
+    prepareDataset();
+
+    // An FTS index on a non-text column (id is int) resolves the column fine but fails inside
+    // AddIndexExec.run()'s FTS path, after the driver-side dataset is opened — the path the
+    // close-on-failure fix guards. We assert the publicly observable contract: the failed index
+    // is not committed, the table stays queryable, and a later valid CREATE INDEX succeeds. (On
+    // POSIX a leaked read handle would not surface, so this guards reusability/cleanliness, not
+    // handle-closure directly.)
+    Exception failure =
+        Assertions.assertThrows(
+            Exception.class,
+            () ->
+                spark
+                    .sql(
+                        String.format(
+                            "alter table %s create index bad_idx using fts (id)", fullTable))
+                    .collect());
+
+    // The failure must come from the index-build path (after the driver-side dataset is opened),
+    // not from query analysis — otherwise this test would no longer exercise the close-on-failure
+    // path it exists to guard.
+    Assertions.assertFalse(
+        failure instanceof org.apache.spark.sql.AnalysisException,
+        "Expected a build-time failure after dataset open, not an analysis error: " + failure);
+
+    // The table is still fully queryable after the failed CREATE INDEX.
+    Dataset<Row> all = spark.sql(String.format("select * from %s", fullTable));
+    Assertions.assertEquals(20L, all.count());
+
+    // The failed index was never committed to the manifest.
+    org.lance.Dataset lanceDataset = org.lance.Dataset.open().uri(tableDir).build();
+    try {
+      boolean hasBadIdx =
+          lanceDataset.getIndexes().stream().anyMatch(i -> "bad_idx".equals(i.name()));
+      Assertions.assertFalse(hasBadIdx, "Failed index should not be committed to the manifest");
+    } finally {
+      lanceDataset.close();
+    }
+
+    // The dataset is reusable: a subsequent valid CREATE INDEX still succeeds.
+    spark.sql(String.format("alter table %s create index good_idx using btree (id)", fullTable));
+    checkIndex("good_idx");
+  }
+
+  @Test
   public void testCreateFtsIndex() {
     prepareDataset();
 

@@ -710,8 +710,8 @@ public abstract class BaseAddIndexTest {
     Dataset<Row> all = spark.sql(String.format("select * from %s", fullTable));
     Assertions.assertEquals(20, all.collectAsList().size());
 
-    // Nothing was committed to the manifest: at this point the table should have no index at
-    // all (stronger than checking for the failed name, and robust to unnamed segment entries).
+    // Nothing was committed to the manifest: the table should have no index at all. (A check
+    // for the failed name alone would miss unnamed segment entries.)
     org.lance.Dataset lanceDataset = org.lance.Dataset.open().uri(tableDir).build();
     try {
       Assertions.assertTrue(

@@ -19,6 +19,7 @@ import org.lance.index.IndexDescription;
 import org.lance.index.IndexType;
 import org.lance.spark.utils.FieldPathUtils;
 
+import org.apache.spark.SparkException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -693,23 +694,30 @@ public abstract class BaseAddIndexTest {
                             "alter table %s create index bad_idx using fts (id)", fullTable))
                     .collect());
 
-    // The failure must come from the index-build path (after the driver-side dataset is opened),
-    // not from query analysis — otherwise this test would no longer exercise the close-on-failure
-    // path it exists to guard.
-    Assertions.assertFalse(
-        failure instanceof org.apache.spark.sql.AnalysisException,
-        "Expected a build-time failure after dataset open, not an analysis error: " + failure);
+    // The failure must come from the distributed index-build job, which runs only after the
+    // driver-side dataset is opened. A SparkException in the cause chain indicates a job failure;
+    // earlier failures (analysis, driver-side validation) surface unwrapped and would mean this
+    // test no longer exercises the close-on-failure path it exists to guard.
+    boolean fromBuildJob = false;
+    for (Throwable t = failure; t != null && !fromBuildJob; t = t.getCause()) {
+      fromBuildJob = t instanceof SparkException;
+    }
+    Assertions.assertTrue(
+        fromBuildJob, "Expected a build-job failure after dataset open, got: " + failure);
 
-    // The table is still fully queryable after the failed CREATE INDEX.
+    // The table is still fully queryable after the failed CREATE INDEX. collectAsList (not
+    // count, which is answered from manifest metadata) forces a real scan of the data pages.
     Dataset<Row> all = spark.sql(String.format("select * from %s", fullTable));
-    Assertions.assertEquals(20L, all.count());
+    Assertions.assertEquals(20, all.collectAsList().size());
 
-    // The failed index was never committed to the manifest.
+    // Nothing was committed to the manifest: at this point the table should have no index at
+    // all (stronger than checking for the failed name, and robust to unnamed segment entries).
     org.lance.Dataset lanceDataset = org.lance.Dataset.open().uri(tableDir).build();
     try {
-      boolean hasBadIdx =
-          lanceDataset.getIndexes().stream().anyMatch(i -> "bad_idx".equals(i.name()));
-      Assertions.assertFalse(hasBadIdx, "Failed index should not be committed to the manifest");
+      Assertions.assertTrue(
+          lanceDataset.getIndexes().isEmpty(),
+          "Failed CREATE INDEX should not commit any index to the manifest, found: "
+              + lanceDataset.getIndexes());
     } finally {
       lanceDataset.close();
     }

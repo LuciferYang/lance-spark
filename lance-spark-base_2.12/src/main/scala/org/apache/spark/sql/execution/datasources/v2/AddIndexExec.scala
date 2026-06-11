@@ -183,9 +183,10 @@ case class AddIndexExec(
     val dataset = Utils.openDatasetBuilder(readOptions).build()
 
     // The finally closes the dataset on every exit path, including a failure of the
-    // index-build job or the commit below. Partial per-fragment metadata that workers
-    // already wrote under this uuid stays uncommitted: unreferenced by the manifest, so
-    // invisible to readers and reclaimable by VACUUM with delete_unverified = true.
+    // index-build job or the commit below. If the build or commit fails, partial index files
+    // written under this uuid (per-fragment partials and any merged root) stay uncommitted:
+    // unreferenced by the manifest, so invisible to readers, and eventually reclaimable by
+    // VACUUM with delete_unverified = true.
     try {
       val indexBuildResult =
         new FragmentBasedIndexJob(
